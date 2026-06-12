@@ -1,9 +1,7 @@
 [submodule "elementary"]
 	path = native/elementary
-	url = https://github.com/elemaudio/elementary.git
+	url = https://github.com/YuMuuu/elementary.git
+	branch = fix/runtime-snapshot-graph-entry
 [submodule "juce"]
 	path = native/juce
 	url = https://github.com/juce-framework/JUCE.git
-[submodule "choc"]
-	path = native/choc
-	url = https://github.com/nick-thompson/choc.git
