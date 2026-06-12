@@ -6,11 +6,7 @@ export type JsonObject = {
 
 export type DspState = {
   sampleRate: number;
-  size: number;
-  decay: number;
-  mod: number;
-  mix: number;
-};
+} & JsonObject;
 
 export type HydratedNode = {
   symbol: '__ELEM_NODE__';
@@ -50,10 +46,7 @@ export function parseDspState(serialized: string): DspState {
   const source = parseJsonObject(serialized, 'DSP state');
 
   return {
+    ...source,
     sampleRate: readNumberField(source, 'sampleRate'),
-    size: readNumberField(source, 'size'),
-    decay: readNumberField(source, 'decay'),
-    mod: readNumberField(source, 'mod'),
-    mix: readNumberField(source, 'mix'),
   };
 }

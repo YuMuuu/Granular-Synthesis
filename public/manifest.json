@@ -1,12 +1,38 @@
 {
   "window": {
-    "width": 753,
-    "height": 373
+    "width": 1100,
+    "height": 720
   },
   "parameters": [
-    { "paramId": "size",    "name": "Size",     "min": 0.0, "max": 1.0, "defaultValue": 0.5 },
-    { "paramId": "decay",   "name": "Decay",    "min": 0.0, "max": 1.0, "defaultValue": 0.5 },
-    { "paramId": "mod",     "name": "Mod",      "min": 0.0, "max": 1.0, "defaultValue": 0.5 },
-    { "paramId": "mix",     "name": "Mix",      "min": 0.0, "max": 1.0, "defaultValue": 0.5 }
+    { "type": "float", "paramId": "regionStart", "name": "Region Start", "min": 0.0, "max": 1.0, "defaultValue": 0.0 },
+    { "type": "float", "paramId": "regionEnd", "name": "Region End", "min": 0.0, "max": 1.0, "defaultValue": 1.0 },
+    { "type": "float", "paramId": "position", "name": "Position", "min": 0.0, "max": 1.0, "defaultValue": 0.5 },
+    { "type": "float", "paramId": "scanRate", "name": "Scan Rate", "min": -2.0, "max": 2.0, "defaultValue": 0.0 },
+    { "type": "bool", "paramId": "freeze", "name": "Freeze", "defaultValue": false },
+    { "type": "float", "paramId": "rootNote", "name": "Root Note", "min": 0, "max": 127, "interval": 1, "defaultValue": 60 },
+
+    { "type": "float", "paramId": "grainSize", "name": "Grain Size", "min": 5.0, "max": 500.0, "defaultValue": 100.0 },
+    { "type": "float", "paramId": "density", "name": "Density", "min": 1.0, "max": 100.0, "defaultValue": 20.0 },
+    { "type": "float", "paramId": "transpose", "name": "Transpose", "min": -24.0, "max": 24.0, "defaultValue": 0.0 },
+
+    { "type": "float", "paramId": "positionScatter", "name": "Position Scatter", "min": 0.0, "max": 1.0, "defaultValue": 0.0 },
+    { "type": "float", "paramId": "sizeScatter", "name": "Size Scatter", "min": 0.0, "max": 1.0, "defaultValue": 0.0 },
+    { "type": "float", "paramId": "pitchScatter", "name": "Pitch Scatter", "min": 0.0, "max": 12.0, "defaultValue": 0.0 },
+
+    { "type": "float", "paramId": "reverseProbability", "name": "Reverse Probability", "min": 0.0, "max": 1.0, "defaultValue": 0.0 },
+    { "type": "float", "paramId": "stereoWidth", "name": "Stereo Width", "min": 0.0, "max": 1.0, "defaultValue": 0.5 },
+    { "type": "choice", "paramId": "windowType", "name": "Window", "choices": ["Hann", "Blackman", "Tukey"], "defaultValue": 0 },
+
+    { "type": "float", "paramId": "attack", "name": "Attack", "min": 0.001, "max": 10.0, "defaultValue": 0.01 },
+    { "type": "float", "paramId": "decay", "name": "Decay", "min": 0.001, "max": 10.0, "defaultValue": 0.1 },
+    { "type": "float", "paramId": "sustain", "name": "Sustain", "min": 0.0, "max": 1.0, "defaultValue": 0.8 },
+    { "type": "float", "paramId": "release", "name": "Release", "min": 0.001, "max": 20.0, "defaultValue": 0.5 },
+
+    { "type": "bool", "paramId": "syncEnabled", "name": "Sync", "defaultValue": false },
+    { "type": "choice", "paramId": "densityDivision", "name": "Density Division", "choices": ["1/32", "1/16", "1/8", "1/4", "1/2", "1/1"], "defaultValue": 2 },
+    { "type": "choice", "paramId": "scanDivision", "name": "Scan Division", "choices": ["1/8", "1/4", "1/2", "1/1", "2/1", "4/1"], "defaultValue": 3 },
+
+    { "type": "bool", "paramId": "phaseEnabled", "name": "Phase", "defaultValue": false },
+    { "type": "float", "paramId": "outputGain", "name": "Output Gain", "min": -60.0, "max": 12.0, "defaultValue": -6.0 }
   ]
 }

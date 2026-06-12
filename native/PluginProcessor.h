@@ -6,6 +6,8 @@
 #include <juce_javascript/juce_javascript.h>
 #include <elem/Runtime.h>
 
+#include <optional>
+
 class NativeBridgeObject;
 
 
@@ -78,8 +80,6 @@ private:
 
     elem::js::Object state;
     std::unique_ptr<juce::JavascriptEngine> jsContext;
-
-    juce::AudioBuffer<float> scratchBuffer;
 
     std::unique_ptr<elem::Runtime<float>> runtime;
 

@@ -5,6 +5,32 @@ import Knob from './Knob';
 
 import manifest from '../public/manifest.json';
 
+type FloatParameter = {
+  type: 'float';
+  paramId: string;
+  name: string;
+  min: number;
+  max: number;
+  defaultValue: number;
+};
+
+type BoolParameter = {
+  type: 'bool';
+  paramId: string;
+  name: string;
+  defaultValue: boolean;
+};
+
+type ChoiceParameter = {
+  type: 'choice';
+  paramId: string;
+  name: string;
+  choices: string[];
+  defaultValue: number;
+};
+
+type ManifestParameter = FloatParameter | BoolParameter | ChoiceParameter;
+
 
 // Generated from Lockup.svg using svgr, and then I changed the generated code
 // a bit to use a currentColor fill on the text path, and to move the strokeLinejoin/cap
@@ -118,38 +144,75 @@ export default function Interface(props: InterfaceProps) {
     thumbColor: '#F8FAFC',
   };
 
-  const params = manifest.parameters.map(({paramId, name}) => {
-    const currentValue = props.state[paramId] || 0;
-
-    return {
-      paramId,
-      name,
-      value: currentValue,
-      readout: `${Math.round(currentValue * 100)}%`,
-      setValue: (v: number) => props.requestParamValueUpdate(paramId, v),
-    };
-  });
+  const params = manifest.parameters as ManifestParameter[];
 
   return (
     <div className="w-full h-screen min-w-[492px] min-h-[238px] bg-slate-800 bg-mesh p-8">
       <div className="h-1/5 flex justify-between items-center text-md text-slate-400 select-none">
         <Logo className="h-8 w-auto text-slate-100" />
         <div>
-          <span className="font-bold">SRVB</span> &middot; {__BUILD_DATE__} &middot; {__COMMIT_HASH__}
+          <span className="font-bold">Granular Synthesis</span> &middot; {__BUILD_DATE__} &middot; {__COMMIT_HASH__}
         </div>
       </div>
       <div className="flex flex-col h-4/5">
         {props.error && (<ErrorAlert message={props.error.message} reset={props.resetErrorState} />)}
         <div className="flex flex-1">
-          {params.map(({name, value, readout, setValue}) => (
-            <div key={name} className="flex flex-col flex-1 justify-center items-center">
-              <Knob className="h-20 w-20 m-4" value={value} onChange={setValue} {...colorProps} />
-              <div className="flex-initial mt-2">
-                <div className="text-sm text-slate-50 text-center font-light">{name}</div>
-                <div className="text-sm text-pink-500 text-center font-light">{readout}</div>
-              </div>
-            </div>
-          ))}
+          <div className="grid w-full grid-cols-6 gap-4 overflow-y-auto">
+            {params.map((parameter) => {
+              const currentValue = props.state[parameter.paramId] ?? parameter.defaultValue;
+
+              if (parameter.type === 'bool') {
+                const enabled = currentValue === true;
+
+                return (
+                  <button
+                    key={parameter.paramId}
+                    type="button"
+                    className={`rounded border p-4 text-sm ${enabled ? 'border-pink-500 bg-pink-500 text-slate-950' : 'border-slate-600 bg-slate-900 text-slate-200'}`}
+                    onClick={() => props.requestParamValueUpdate(parameter.paramId, enabled ? 0 : 1)}
+                  >
+                    {parameter.name}: {enabled ? 'On' : 'Off'}
+                  </button>
+                );
+              }
+
+              if (parameter.type === 'choice') {
+                const index = typeof currentValue === 'number' ? Math.round(currentValue) : parameter.defaultValue;
+                const denominator = Math.max(1, parameter.choices.length - 1);
+
+                return (
+                  <label key={parameter.paramId} className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
+                    {parameter.name}
+                    <select
+                      className="rounded bg-slate-800 p-2"
+                      value={index}
+                      onChange={(event) => props.requestParamValueUpdate(parameter.paramId, Number(event.target.value) / denominator)}
+                    >
+                      {parameter.choices.map((choice, choiceIndex) => (
+                        <option key={choice} value={choiceIndex}>{choice}</option>
+                      ))}
+                    </select>
+                  </label>
+                );
+              }
+
+              const actualValue = typeof currentValue === 'number' ? currentValue : parameter.defaultValue;
+              const normalizedValue = (actualValue - parameter.min) / (parameter.max - parameter.min);
+
+              return (
+                <div key={parameter.paramId} className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-900 p-3">
+                  <Knob
+                    className="m-2 h-16 w-16"
+                    value={normalizedValue}
+                    onChange={(value) => props.requestParamValueUpdate(parameter.paramId, value)}
+                    {...colorProps}
+                  />
+                  <div className="text-center text-sm font-light text-slate-50">{parameter.name}</div>
+                  <div className="text-center text-sm font-light text-pink-500">{actualValue.toFixed(2)}</div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>

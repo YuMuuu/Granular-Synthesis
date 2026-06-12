@@ -1,10 +1,6 @@
 import {Renderer, el} from '@elemaudio/core';
-import {RefMap} from './RefMap';
-import srvb from './srvb';
 import {parseDspState, parseJsonObject, type HydratedNode, type DspState, type JsonValue} from './types';
 
-// This project demonstrates writing a small FDN reverb effect in Elementary.
-//
 // First, we initialize a custom Renderer instance that marshals our instruction
 // batches through the __postNativeMessage__ function to direct the underlying native
 // engine.
@@ -13,9 +9,6 @@ type RenderBatch = JsonValue[];
 const core = new Renderer((batch: RenderBatch) => {
   globalThis.__postNativeMessage__?.(JSON.stringify(batch));
 });
-
-// Next, a RefMap for coordinating our refs
-const refs = new RefMap(core);
 
 // Holding onto the previous state allows us a quick way to differentiate
 // when we need to fully re-render versus when we can just update refs
@@ -51,22 +44,12 @@ globalThis.__receiveStateChange__ = (serializedState: string) => {
   const state = parseDspState(serializedState);
 
   if (shouldRender(prevState, state)) {
-    const stats = core.render(...srvb({
-      key: 'srvb',
-      sampleRate: state.sampleRate,
-      size: refs.getOrCreate('size', 'const', {value: state.size}, []),
-      decay: refs.getOrCreate('decay', 'const', {value: state.decay}, []),
-      mod: refs.getOrCreate('mod', 'const', {value: state.mod}, []),
-      mix: refs.getOrCreate('mix', 'const', {value: state.mix}, []),
-    }, el.in({channel: 0}), el.in({channel: 1})));
+    // The granular graph is introduced in a later implementation step.
+    // Until then, keep the synth output explicitly silent.
+    const silence = el.mul(0, el.sr());
+    const stats = core.render(silence, silence);
 
     console.log(stats);
-  } else {
-    console.log('Updating refs');
-    refs.update('size', {value: state.size});
-    refs.update('decay', {value: state.decay});
-    refs.update('mod', {value: state.mod});
-    refs.update('mix', {value: state.mix});
   }
 
   prevState = state;

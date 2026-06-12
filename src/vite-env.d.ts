@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 declare global {
-  type PluginState = Record<string, number>;
+  type PluginState = Record<string, number | boolean | string>;
 
   type PluginError = {
     name?: string;

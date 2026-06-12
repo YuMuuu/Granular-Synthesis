@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
-project(Elem_SRVB VERSION 0.1.0)
+project(GranularSynthesis VERSION 0.1.0)
 
 
-set(TARGET_NAME SRVB)
+set(TARGET_NAME GranularSynthesis)
 set(ASSETS_DIR ${CMAKE_SOURCE_DIR}/../dist/)
 
 option(JUCE_ENABLE_MODULE_SOURCE_GROUPS "Enable Module Source Groups" ON)
@@ -13,18 +13,16 @@ add_subdirectory(juce)
 add_subdirectory(elementary/runtime)
 
 juce_add_plugin(${TARGET_NAME}
-  BUNDLE_ID "audio.elementary.srvb"
-  COMPANY_NAME "Elementary Audio"
-  COMPANY_WEBSITE "https://www.elementary.audio"
-  COMPANY_EMAIL "nick@elementary.audio"
-  PLUGIN_MANUFACTURER_CODE Elem       # A four-character manufacturer id with at least one upper-case character
-  PLUGIN_CODE Srvb                    # A unique four-character plugin id with at least one upper-case character
   COPY_PLUGIN_AFTER_BUILD FALSE       # We enable this manually below after adding a copy step
   APP_SANDBOX_ENABLED TRUE
   APP_SANDBOX_OPTIONS com.apple.security.network.client com.apple.security.files.user-selected.read-write
   NEEDS_WEB_BROWSER TRUE
-  FORMATS AU VST3                     # The formats to build. Other valid formats are: AAX Unity VST AU AUv3
-  PRODUCT_NAME ${TARGET_NAME})        # The name of the final executable, which can differ from the target name
+  IS_SYNTH TRUE
+  NEEDS_MIDI_INPUT TRUE
+  NEEDS_MIDI_OUTPUT FALSE
+  IS_MIDI_EFFECT FALSE
+  FORMATS VST3
+  PRODUCT_NAME "Granular Synthesis")
 
 # Copy static assets post build
 if (NOT ELEM_DEV_LOCALHOST)

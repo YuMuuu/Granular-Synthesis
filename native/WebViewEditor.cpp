@@ -161,11 +161,11 @@ void WebViewEditor::handleSetParameterValueEvent(const juce::var& e)
 
     for (auto& p : getAudioProcessor()->getParameters())
     {
-        if (auto* pf = dynamic_cast<juce::AudioParameterFloat*>(p))
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(p))
         {
-            if (pf->paramID == paramId)
+            if (ranged->paramID == paramId)
             {
-                pf->setValueNotifyingHost(static_cast<float>(v));
+                ranged->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, static_cast<float>(v)));
                 break;
             }
         }

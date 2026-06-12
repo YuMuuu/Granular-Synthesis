@@ -1,6 +1,44 @@
 #include "PluginProcessor.h"
 #include "WebViewEditor.h"
 
+namespace
+{
+elem::js::Value parameterValueToState(const juce::AudioProcessorParameter& parameter, float normalizedValue)
+{
+    if (dynamic_cast<const juce::AudioParameterBool*>(&parameter) != nullptr)
+        return elem::js::Value(normalizedValue >= 0.5f);
+
+    if (auto* ranged = dynamic_cast<const juce::RangedAudioParameter*>(&parameter))
+        return elem::js::Number(ranged->convertFrom0to1(normalizedValue));
+
+    return elem::js::Number(normalizedValue);
+}
+
+std::optional<float> stateValueToNormalized(
+    const juce::AudioProcessorParameter& parameter,
+    const elem::js::Value& value)
+{
+    if (dynamic_cast<const juce::AudioParameterBool*>(&parameter) != nullptr)
+    {
+        if (value.isBool())
+            return static_cast<bool>(value) ? 1.0f : 0.0f;
+
+        if (value.isNumber())
+            return static_cast<float>(static_cast<elem::js::Number>(value) >= 0.5);
+
+        return std::nullopt;
+    }
+
+    if (!value.isNumber())
+        return std::nullopt;
+
+    if (auto* ranged = dynamic_cast<const juce::RangedAudioParameter*>(&parameter))
+        return ranged->convertTo0to1(static_cast<float>(static_cast<elem::js::Number>(value)));
+
+    return static_cast<float>(static_cast<elem::js::Number>(value));
+}
+}
+
 //==============================================================================
 // A quick helper for locating bundled asset files
 juce::File getAssetsDirectory()
@@ -75,7 +113,6 @@ private:
 //==============================================================================
 EffectsPluginProcessor::EffectsPluginProcessor()
      : AudioProcessor (BusesProperties()
-                       .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
     // Initialize parameters from the manifest file
@@ -104,27 +141,76 @@ EffectsPluginProcessor::EffectsPluginProcessor()
         if (!descrip.isObject())
             continue;
 
+        auto type = descrip.getWithDefault("type", elem::js::String("float"));
         auto paramId = descrip.getWithDefault("paramId", elem::js::String("unknown"));
         auto name = descrip.getWithDefault("name", elem::js::String("Unknown"));
-        auto minValue = descrip.getWithDefault("min", elem::js::Number(0));
-        auto maxValue = descrip.getWithDefault("max", elem::js::Number(1));
-        auto defValue = descrip.getWithDefault("defaultValue", elem::js::Number(0));
+        juce::RangedAudioParameter* p = nullptr;
 
-        auto* p = new juce::AudioParameterFloat(
-            juce::ParameterID(paramId, 1),
-            name,
-            {static_cast<float>(minValue), static_cast<float>(maxValue)},
-            defValue
-        );
+        if (type == elem::js::String("bool"))
+        {
+            auto defaultValue = descrip.getWithDefault("defaultValue", elem::js::Value(false));
+
+            if (!defaultValue.isBool())
+                continue;
+
+            p = new juce::AudioParameterBool(
+                juce::ParameterID(paramId, 1),
+                name,
+                static_cast<bool>(defaultValue));
+        }
+        else if (type == elem::js::String("choice"))
+        {
+            auto choicesValue = descrip.getWithDefault("choices", elem::js::Array());
+            auto defaultValue = descrip.getWithDefault("defaultValue", elem::js::Number(0));
+
+            juce::StringArray choices;
+
+            for (const auto& choice : choicesValue)
+            {
+                if (!choice.isString())
+                    continue;
+
+                choices.add(juce::String(static_cast<elem::js::String>(choice)));
+            }
+
+            if (choices.isEmpty())
+                continue;
+
+            p = new juce::AudioParameterChoice(
+                juce::ParameterID(paramId, 1),
+                name,
+                choices,
+                juce::jlimit(0, choices.size() - 1, static_cast<int>(defaultValue)));
+        }
+        else
+        {
+            auto minValue = descrip.getWithDefault("min", elem::js::Number(0));
+            auto maxValue = descrip.getWithDefault("max", elem::js::Number(1));
+            auto interval = descrip.getWithDefault("interval", elem::js::Number(0));
+            auto defaultValue = descrip.getWithDefault("defaultValue", elem::js::Number(0));
+
+            p = new juce::AudioParameterFloat(
+                juce::ParameterID(paramId, 1),
+                name,
+                {
+                    static_cast<float>(minValue),
+                    static_cast<float>(maxValue),
+                    static_cast<float>(interval)
+                },
+                static_cast<float>(defaultValue));
+        }
+
+        if (p == nullptr)
+            continue;
 
         p->addListener(this);
         addParameter(p);
 
-        // Push a new ParameterReadout onto the list to represent this parameter
-        paramReadouts.emplace_back(ParameterReadout { static_cast<float>(defValue), false });
-
-        // Update our state object with the default parameter value
-        state.insert_or_assign(paramId, defValue);
+        const auto normalizedValue = p->getValue();
+        paramReadouts.emplace_back(ParameterReadout { normalizedValue, false });
+        state.insert_or_assign(
+            static_cast<elem::js::String>(paramId),
+            parameterValueToState(*p, normalizedValue));
     }
 }
 
@@ -139,7 +225,7 @@ EffectsPluginProcessor::~EffectsPluginProcessor()
 //==============================================================================
 juce::AudioProcessorEditor* EffectsPluginProcessor::createEditor()
 {
-    return new WebViewEditor(this, getAssetsDirectory(), 800, 704);
+    return new WebViewEditor(this, getAssetsDirectory(), 1100, 720);
 }
 
 bool EffectsPluginProcessor::hasEditor() const
@@ -155,7 +241,7 @@ const juce::String EffectsPluginProcessor::getName() const
 
 bool EffectsPluginProcessor::acceptsMidi() const
 {
-    return false;
+    return true;
 }
 
 bool EffectsPluginProcessor::producesMidi() const
@@ -218,22 +304,20 @@ void EffectsPluginProcessor::releaseResources()
 
 bool EffectsPluginProcessor::isBusesLayoutSupported (const AudioProcessor::BusesLayout& layouts) const
 {
-    return true;
+    return layouts.getMainInputChannelSet().isDisabled()
+        && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
 void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /* midiMessages */)
 {
-    // Copy the input so that our input and output buffers are distinct
-    scratchBuffer.makeCopyOf(buffer, true);
-
     // Clear the output buffer to prevent any garbage if our runtime isn't ready
     buffer.clear();
 
     // Process the elementary runtime
     if (runtime != nullptr) {
         runtime->process(
-            const_cast<const float**>(scratchBuffer.getArrayOfWritePointers()),
-            getTotalNumInputChannels(),
+            nullptr,
+            0,
             const_cast<float**>(buffer.getArrayOfWritePointers()),
             buffer.getNumChannels(),
             buffer.getNumSamples(),
@@ -285,9 +369,11 @@ void EffectsPluginProcessor::handleAsyncUpdate()
 
         if (pr.dirty)
         {
-            if (auto* pf = dynamic_cast<juce::AudioParameterFloat*>(params[i])) {
-                auto paramId = pf->paramID.toStdString();
-                state.insert_or_assign(paramId, elem::js::Number(pr.value));
+            if (auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(params[i]))
+            {
+                state.insert_or_assign(
+                    parameterWithId->paramID.toStdString(),
+                    parameterValueToState(*params[i], pr.value));
             }
         }
     }
@@ -428,7 +514,19 @@ void EffectsPluginProcessor::dispatchError(std::string const& name, std::string 
 //==============================================================================
 void EffectsPluginProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    auto serialized = elem::js::serialize(state);
+    auto currentState = state;
+
+    for (auto* parameter : getParameters())
+    {
+        if (auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
+        {
+            currentState.insert_or_assign(
+                parameterWithId->paramID.toStdString(),
+                parameterValueToState(*parameter, parameter->getValue()));
+        }
+    }
+
+    auto serialized = elem::js::serialize(currentState);
     destData.replaceAll((void *) serialized.c_str(), serialized.size());
 }
 
@@ -438,13 +536,28 @@ void EffectsPluginProcessor::setStateInformation (const void* data, int sizeInBy
         auto str = std::string(static_cast<const char*>(data), sizeInBytes);
         auto parsed = elem::js::parseJSON(str);
         auto o = parsed.getObject();
-        for (auto  &i: o) {
-            std::map<std::string, elem::js::Value>::iterator it;
-            it = state.find(i.first);
-            if (it != state.end()) {
-                state.insert_or_assign(i.first, i.second);
+
+        for (auto* parameter : getParameters())
+        {
+            auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+
+            if (parameterWithId == nullptr)
+                continue;
+
+            const auto id = parameterWithId->paramID.toStdString();
+            const auto it = o.find(id);
+
+            if (it == o.end())
+                continue;
+
+            if (auto normalizedValue = stateValueToNormalized(*parameter, it->second))
+            {
+                parameter->setValueNotifyingHost(*normalizedValue);
+                state.insert_or_assign(id, parameterValueToState(*parameter, *normalizedValue));
             }
         }
+
+        triggerAsyncUpdate();
     } catch(...) {
         // Failed to parse the incoming state, or the state we did parse was not actually
         // an object type. How you handle it is up to you, here we just ignore it

@@ -28,3 +28,5 @@ public/dsp.main.js
 #storybook
 storybook-static/
 screenshots/storybook/
+
+doc/
