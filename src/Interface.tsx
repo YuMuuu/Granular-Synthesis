@@ -133,6 +133,7 @@ function ErrorAlert({message, reset}: ErrorAlertProps) {
 type InterfaceProps = {
   state: PluginState;
   error: PluginError | null;
+  openSample: () => void;
   requestParamValueUpdate: (paramId: string, value: number) => void;
   resetErrorState: () => void;
 };
@@ -145,6 +146,8 @@ export default function Interface(props: InterfaceProps) {
   };
 
   const params = manifest.parameters as ManifestParameter[];
+  const sample = props.state.sample;
+  const sampleName = sample?.originalFileName || sample?.fileName || 'No sample loaded';
 
   return (
     <div className="w-full h-screen min-w-[492px] min-h-[238px] bg-slate-800 bg-mesh p-8">
@@ -156,6 +159,35 @@ export default function Interface(props: InterfaceProps) {
       </div>
       <div className="flex flex-col h-4/5">
         {props.error && (<ErrorAlert message={props.error.message} reset={props.resetErrorState} />)}
+        <div className="mb-4 flex items-center gap-4 rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
+          <button
+            type="button"
+            className="rounded bg-pink-500 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50"
+            disabled={sample?.status === 'loading'}
+            onClick={props.openSample}
+          >
+            {sample?.status === 'loading'
+              ? 'Loading...'
+              : sample?.status === 'missing'
+                ? 'Re-link WAV'
+                : 'Open WAV'}
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-semibold">{sampleName}</div>
+            {sample?.status === 'ready' && (
+              <div className="text-slate-400">
+                {sample.durationSeconds.toFixed(2)} s · {Math.round(sample.sampleRate)} Hz · Mono
+              </div>
+            )}
+            {(sample?.status === 'error' || sample?.status === 'missing') && (
+              <div className="text-red-400">{sample.error}</div>
+            )}
+          </div>
+          <div className="text-right text-xs text-slate-400">
+            <div>Voices {props.state.meters?.activeVoices ?? 0}/16</div>
+            <div>Grains {props.state.meters?.activeGrains ?? 0}/128</div>
+          </div>
+        </div>
         <div className="flex flex-1">
           <div className="grid w-full grid-cols-6 gap-4 overflow-y-auto">
             {params.map((parameter) => {

@@ -1,7 +1,33 @@
 /// <reference types="vite/client" />
 
 declare global {
-  type PluginState = Record<string, number | boolean | string>;
+  type SampleLoadStatus = 'empty' | 'loading' | 'ready' | 'error' | 'missing';
+
+  type SampleState = {
+    status: SampleLoadStatus;
+    sampleId: string;
+    resourceId: string;
+    fileName: string;
+    originalFileName: string;
+    fileHash: string;
+    sampleRate: number;
+    numFrames: number;
+    durationSeconds: number;
+    waveformPeaks: number[];
+    error: string;
+  };
+
+  type MeterState = {
+    activeVoices: number;
+    activeGrains: number;
+    cpuOverload: boolean;
+  };
+
+  type PluginState = Record<string, unknown> & {
+    schemaVersion?: number;
+    sample?: SampleState;
+    meters?: MeterState;
+  };
 
   type PluginError = {
     name?: string;

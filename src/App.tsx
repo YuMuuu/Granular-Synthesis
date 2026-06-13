@@ -18,6 +18,10 @@ function requestParamValueUpdate(paramId: string, value: number) {
   }
 }
 
+function openSample() {
+  globalThis.__postNativeMessage__?.('openSample');
+}
+
 if (import.meta.env.DEV && import.meta.hot) {
   import.meta.hot.on('reload-dsp', () => {
     console.log('Sending reload dsp message');
@@ -44,6 +48,7 @@ export default function App() {
     <Interface
       state={state}
       error={error}
+      openSample={openSample}
       requestParamValueUpdate={requestParamValueUpdate}
       resetErrorState={() => errorStore.setState({ error: null })} />
   );

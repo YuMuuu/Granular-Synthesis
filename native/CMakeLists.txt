@@ -56,6 +56,7 @@ endif()
 target_sources(${TARGET_NAME}
   PRIVATE
   PluginProcessor.cpp
+  SampleLoader.cpp
   WebViewEditor.cpp)
 
 target_compile_features(${TARGET_NAME}
@@ -73,6 +74,7 @@ target_link_libraries(${TARGET_NAME}
   PRIVATE
   juce::juce_audio_basics
   juce::juce_audio_devices
+  juce::juce_audio_formats
   juce::juce_audio_plugin_client
   juce::juce_audio_processors
   juce::juce_audio_utils
@@ -84,4 +86,5 @@ target_link_libraries(${TARGET_NAME}
   juce::juce_gui_basics
   juce::juce_gui_extra
   juce::juce_javascript
+  juce::juce_cryptography
   runtime)

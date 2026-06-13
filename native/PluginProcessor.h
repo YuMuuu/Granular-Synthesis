@@ -6,6 +6,9 @@
 #include <juce_javascript/juce_javascript.h>
 #include <elem/Runtime.h>
 
+#include "SampleLoader.h"
+
+#include <mutex>
 #include <optional>
 
 class NativeBridgeObject;
@@ -69,9 +72,14 @@ public:
     /** Internal helper for propagating processor state changes. */
     void dispatchStateChange();
     void dispatchError(std::string const& name, std::string const& message);
+    void openSample(const juce::File& file);
 
 private:
     friend class NativeBridgeObject;
+    void receiveSampleLoadResult(SampleLoadResult result);
+    void applyPendingSampleResult();
+    void registerLoadedSample();
+    void restoreSampleFromState(const elem::js::Object& restoredState);
 
     //==============================================================================
     std::atomic<bool> shouldInitialize { false };
@@ -82,6 +90,11 @@ private:
     std::unique_ptr<juce::JavascriptEngine> jsContext;
 
     std::unique_ptr<elem::Runtime<float>> runtime;
+    std::mutex sampleResultMutex;
+    std::optional<SampleLoadResult> pendingSampleResult;
+    juce::AudioBuffer<float> loadedSampleBuffer;
+    juce::String loadedSampleResourceId;
+    SampleLoader sampleLoader;
 
     //==============================================================================
     // A simple "dirty list" abstraction here for propagating realtime parameter

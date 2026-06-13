@@ -3,10 +3,21 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import Interface from './Interface';
 
 const defaultState = {
-  size: 0.35,
-  decay: 0.62,
-  mod: 0.28,
-  mix: 0.45,
+  grainSize: 100,
+  density: 20,
+  sample: {
+    status: 'ready' as const,
+    sampleId: 'demo',
+    resourceId: 'sample:demo',
+    fileName: 'demo.wav',
+    originalFileName: 'demo.wav',
+    fileHash: 'demo',
+    sampleRate: 48000,
+    numFrames: 144000,
+    durationSeconds: 3,
+    waveformPeaks: [],
+    error: '',
+  },
 };
 
 const meta = {
@@ -18,6 +29,7 @@ const meta = {
   args: {
     state: defaultState,
     error: null,
+    openSample: () => {},
     requestParamValueUpdate: () => {},
     resetErrorState: () => {},
   },
@@ -31,10 +43,9 @@ export const Default: Story = {};
 export const DrySmallRoom: Story = {
   args: {
     state: {
-      size: 0.18,
-      decay: 0.32,
-      mod: 0.12,
-      mix: 0.2,
+      ...defaultState,
+      grainSize: 40,
+      density: 8,
     },
   },
 };
@@ -42,10 +53,9 @@ export const DrySmallRoom: Story = {
 export const WideLush: Story = {
   args: {
     state: {
-      "size": 0.11,
-      "decay": 0.86,
-      "mod": 0.68,
-      "mix": 0.72
+      ...defaultState,
+      grainSize: 220,
+      density: 45,
     },
   },
 };

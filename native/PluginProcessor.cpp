@@ -1,8 +1,12 @@
 #include "PluginProcessor.h"
 #include "WebViewEditor.h"
 
+#include <elem/AudioBufferResource.h>
+
 namespace
 {
+constexpr int stateSchemaVersion = 1;
+
 elem::js::Value parameterValueToState(const juce::AudioProcessorParameter& parameter, float normalizedValue)
 {
     if (dynamic_cast<const juce::AudioParameterBool*>(&parameter) != nullptr)
@@ -36,6 +40,46 @@ std::optional<float> stateValueToNormalized(
         return ranged->convertTo0to1(static_cast<float>(static_cast<elem::js::Number>(value)));
 
     return static_cast<float>(static_cast<elem::js::Number>(value));
+}
+
+elem::js::Object makeEmptySampleState()
+{
+    return {
+        { "status", elem::js::String("empty") },
+        { "sampleId", elem::js::String() },
+        { "resourceId", elem::js::String() },
+        { "fileName", elem::js::String() },
+        { "originalFileName", elem::js::String() },
+        { "fileHash", elem::js::String() },
+        { "sampleRate", elem::js::Number(0) },
+        { "numFrames", elem::js::Number(0) },
+        { "durationSeconds", elem::js::Number(0) },
+        { "waveformPeaks", elem::js::Array() },
+        { "error", elem::js::String() }
+    };
+}
+
+elem::js::Object makeSampleState(const SampleLoadResult& result, const juce::String& status)
+{
+    elem::js::Array peaks;
+    peaks.reserve(result.waveformPeaks.size());
+
+    for (const auto peak : result.waveformPeaks)
+        peaks.emplace_back(elem::js::Number(peak));
+
+    return {
+        { "status", status.toStdString() },
+        { "sampleId", result.metadata.sampleId.toStdString() },
+        { "resourceId", ("sample:" + result.metadata.sampleId).toStdString() },
+        { "fileName", result.metadata.fileName.toStdString() },
+        { "originalFileName", result.metadata.originalFileName.toStdString() },
+        { "fileHash", result.metadata.fileHash.toStdString() },
+        { "sampleRate", elem::js::Number(result.metadata.sampleRate) },
+        { "numFrames", elem::js::Number(result.metadata.numFrames) },
+        { "durationSeconds", elem::js::Number(result.metadata.durationSeconds) },
+        { "waveformPeaks", std::move(peaks) },
+        { "error", result.error.toStdString() }
+    };
 }
 }
 
@@ -113,8 +157,17 @@ private:
 //==============================================================================
 EffectsPluginProcessor::EffectsPluginProcessor()
      : AudioProcessor (BusesProperties()
-                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+       sampleLoader([this](SampleLoadResult result) { receiveSampleLoadResult(std::move(result)); })
 {
+    state.insert_or_assign("schemaVersion", elem::js::Number(stateSchemaVersion));
+    state.insert_or_assign("sample", makeEmptySampleState());
+    state.insert_or_assign("meters", elem::js::Object {
+        { "activeVoices", elem::js::Number(0) },
+        { "activeGrains", elem::js::Number(0) },
+        { "cpuOverload", elem::js::Value(false) }
+    });
+
     // Initialize parameters from the manifest file
 #if ELEM_DEV_LOCALHOST
     auto manifestFile = juce::URL("http://localhost:5173/manifest.json");
@@ -216,6 +269,8 @@ EffectsPluginProcessor::EffectsPluginProcessor()
 
 EffectsPluginProcessor::~EffectsPluginProcessor()
 {
+    sampleLoader.shutdown();
+
     for (auto& p : getParameters())
     {
         p->removeListener(this);
@@ -349,8 +404,11 @@ void EffectsPluginProcessor::handleAsyncUpdate()
         // TODO: This is definitely not thread-safe! It could delete a Runtime instance while
         // the real-time thread is using it. Depends on when the host will call prepareToPlay.
         runtime = std::make_unique<elem::Runtime<float>>(lastKnownSampleRate, lastKnownBlockSize);
+        registerLoadedSample();
         initJavaScriptEngine();
     }
+
+    applyPendingSampleResult();
 
     // Next we iterate over the current parameter values to update our local state
     // object, which we in turn dispatch into the JavaScript engine
@@ -379,6 +437,116 @@ void EffectsPluginProcessor::handleAsyncUpdate()
     }
 
     dispatchStateChange();
+}
+
+void EffectsPluginProcessor::openSample(const juce::File& file)
+{
+    auto sampleState = makeEmptySampleState();
+    sampleState.insert_or_assign("status", elem::js::String("loading"));
+    sampleState.insert_or_assign("originalFileName", file.getFileName().toStdString());
+    state.insert_or_assign("sample", std::move(sampleState));
+    dispatchStateChange();
+    sampleLoader.importFile(file);
+}
+
+void EffectsPluginProcessor::receiveSampleLoadResult(SampleLoadResult result)
+{
+    {
+        const std::scoped_lock lock(sampleResultMutex);
+        pendingSampleResult = std::move(result);
+    }
+
+    triggerAsyncUpdate();
+}
+
+void EffectsPluginProcessor::applyPendingSampleResult()
+{
+    std::optional<SampleLoadResult> result;
+
+    {
+        const std::scoped_lock lock(sampleResultMutex);
+        result = std::exchange(pendingSampleResult, std::nullopt);
+    }
+
+    if (!result.has_value())
+        return;
+
+    if (!result->succeeded())
+    {
+        const auto currentSampleIt = state.find("sample");
+
+        if (result->metadata.sampleId.isNotEmpty()
+            && currentSampleIt != state.end()
+            && currentSampleIt->second.isObject())
+        {
+            auto missingState = currentSampleIt->second.getObject();
+            missingState.insert_or_assign("status", elem::js::String("missing"));
+            missingState.insert_or_assign("error", result->error.toStdString());
+            state.insert_or_assign("sample", std::move(missingState));
+        }
+        else
+        {
+            state.insert_or_assign("sample", makeSampleState(*result, "error"));
+        }
+
+        dispatchError("Sample Load Error", result->error.toStdString());
+        return;
+    }
+
+    const auto currentSampleIt = state.find("sample");
+
+    if (result->metadata.originalFileName.isEmpty()
+        && currentSampleIt != state.end()
+        && currentSampleIt->second.isObject())
+    {
+        const auto currentSample = currentSampleIt->second.getObject();
+        const auto originalNameIt = currentSample.find("originalFileName");
+
+        if (originalNameIt != currentSample.end() && originalNameIt->second.isString())
+            result->metadata.originalFileName = static_cast<elem::js::String>(originalNameIt->second);
+    }
+
+    loadedSampleBuffer = std::move(result->monoBuffer);
+    loadedSampleResourceId = "sample:" + result->metadata.sampleId;
+    registerLoadedSample();
+    state.insert_or_assign("sample", makeSampleState(*result, "ready"));
+}
+
+void EffectsPluginProcessor::registerLoadedSample()
+{
+    if (runtime == nullptr || loadedSampleBuffer.getNumSamples() == 0 || loadedSampleResourceId.isEmpty())
+        return;
+
+    runtime->addSharedResource(
+        loadedSampleResourceId.toStdString(),
+        std::make_unique<elem::AudioBufferResource>(
+            loadedSampleBuffer.getWritePointer(0),
+            static_cast<size_t>(loadedSampleBuffer.getNumSamples())));
+}
+
+void EffectsPluginProcessor::restoreSampleFromState(const elem::js::Object& restoredState)
+{
+    const auto sampleIt = restoredState.find("sample");
+
+    if (sampleIt == restoredState.end() || !sampleIt->second.isObject())
+        return;
+
+    const auto sampleObject = sampleIt->second.getObject();
+    const auto idIt = sampleObject.find("sampleId");
+
+    if (idIt == sampleObject.end() || !idIt->second.isString())
+        return;
+
+    const auto sampleId = juce::String(static_cast<elem::js::String>(idIt->second));
+
+    if (sampleId.isEmpty())
+        return;
+
+    auto loadingState = sampleObject;
+    loadingState.insert_or_assign("status", elem::js::String("loading"));
+    loadingState.insert_or_assign("error", elem::js::String());
+    state.insert_or_assign("sample", std::move(loadingState));
+    sampleLoader.restoreSample(sampleId);
 }
 
 void EffectsPluginProcessor::initJavaScriptEngine()
@@ -515,6 +683,7 @@ void EffectsPluginProcessor::dispatchError(std::string const& name, std::string 
 void EffectsPluginProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto currentState = state;
+    currentState.insert_or_assign("schemaVersion", elem::js::Number(stateSchemaVersion));
 
     for (auto* parameter : getParameters())
     {
@@ -557,6 +726,7 @@ void EffectsPluginProcessor::setStateInformation (const void* data, int sizeInBy
             }
         }
 
+        restoreSampleFromState(o);
         triggerAsyncUpdate();
     } catch(...) {
         // Failed to parse the incoming state, or the state we did parse was not actually

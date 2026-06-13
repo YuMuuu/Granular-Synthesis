@@ -25,8 +25,10 @@ private:
     std::optional<juce::WebBrowserComponent::Resource> getResource(const juce::String& path) const;
     void handleNativeMessage(const juce::var& args);
     void handleSetParameterValueEvent(const juce::var& e);
+    void openSampleChooser();
 
     //==============================================================================
     juce::File assetDirectory;
     std::unique_ptr<juce::WebBrowserComponent> webView;
+    std::unique_ptr<juce::FileChooser> sampleFileChooser;
 };

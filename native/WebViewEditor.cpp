@@ -147,6 +147,9 @@ void WebViewEditor::handleNativeMessage(const juce::var& args)
 
     if (eventName == "setParameterValue" && array->size() > 1)
         handleSetParameterValueEvent(array->getReference(1));
+
+    if (eventName == "openSample")
+        openSampleChooser();
 }
 
 void WebViewEditor::handleSetParameterValueEvent(const juce::var& e)
@@ -170,4 +173,29 @@ void WebViewEditor::handleSetParameterValueEvent(const juce::var& e)
             }
         }
     }
+}
+
+void WebViewEditor::openSampleChooser()
+{
+    sampleFileChooser = std::make_unique<juce::FileChooser>(
+        "Open WAV",
+        juce::File(),
+        "*.wav",
+        true);
+
+    sampleFileChooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [safeThis = SafePointer<WebViewEditor>(this)](const juce::FileChooser& chooser)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            const auto selectedFile = chooser.getResult();
+
+            if (selectedFile == juce::File())
+                return;
+
+            if (auto* processor = dynamic_cast<EffectsPluginProcessor*>(safeThis->getAudioProcessor()))
+                processor->openSample(selectedFile);
+        });
 }
