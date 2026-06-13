@@ -265,6 +265,36 @@ EffectsPluginProcessor::EffectsPluginProcessor()
             transposeParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
         else if (paramId == elem::js::String("release"))
             releaseParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("regionStart"))
+            regionStartParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("regionEnd"))
+            regionEndParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("position"))
+            positionParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("scanRate"))
+            scanRateParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("freeze"))
+            freezeParameter = dynamic_cast<juce::AudioParameterBool*>(p);
+        else if (paramId == elem::js::String("grainSize"))
+            grainSizeParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("density"))
+            densityParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("positionScatter"))
+            positionScatterParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("sizeScatter"))
+            sizeScatterParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("pitchScatter"))
+            pitchScatterParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("reverseProbability"))
+            reverseProbabilityParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("stereoWidth"))
+            stereoWidthParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("attack"))
+            attackParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("decay"))
+            decayParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("sustain"))
+            sustainParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
 
         const auto normalizedValue = p->getValue();
         paramReadouts.emplace_back(ParameterReadout { normalizedValue, false });
@@ -341,6 +371,7 @@ void EffectsPluginProcessor::changeProgramName (int /* index */, const juce::Str
 void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     voiceAllocator.prepare(samplesPerBlock);
+    grainScheduler.prepare(samplesPerBlock, sampleRate);
 
     // Some hosts call `prepareToPlay` on the real-time thread, some call it on the main thread.
     // To address the discrepancy, we check whether anything has changed since our last known
@@ -363,7 +394,9 @@ void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 void EffectsPluginProcessor::releaseResources()
 {
     voiceAllocator.reset();
+    grainScheduler.reset();
     activeVoiceCount.store(0);
+    activeGrainCount.store(0);
 }
 
 bool EffectsPluginProcessor::isBusesLayoutSupported (const AudioProcessor::BusesLayout& layouts) const
@@ -382,7 +415,23 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         && rootNoteParameter != nullptr
         && transposeParameter != nullptr
         && releaseParameter != nullptr
-        && buffer.getNumSamples() <= voiceAllocator.getMaximumBlockSize())
+        && regionStartParameter != nullptr
+        && regionEndParameter != nullptr
+        && positionParameter != nullptr
+        && scanRateParameter != nullptr
+        && freezeParameter != nullptr
+        && grainSizeParameter != nullptr
+        && densityParameter != nullptr
+        && positionScatterParameter != nullptr
+        && sizeScatterParameter != nullptr
+        && pitchScatterParameter != nullptr
+        && reverseProbabilityParameter != nullptr
+        && stereoWidthParameter != nullptr
+        && attackParameter != nullptr
+        && decayParameter != nullptr
+        && sustainParameter != nullptr
+        && buffer.getNumSamples() <= voiceAllocator.getMaximumBlockSize()
+        && buffer.getNumSamples() <= grainScheduler.getMaximumBlockSize())
     {
         voiceAllocator.render(
             midiMessages,
@@ -397,9 +446,54 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         if (activeVoiceCount.exchange(newActiveVoiceCount) != newActiveVoiceCount)
             triggerAsyncUpdate();
 
-        runtime->process(
+        GrainScheduler::Parameters grainParameters;
+        grainParameters.regionStart = regionStartParameter->get();
+        grainParameters.regionEnd = regionEndParameter->get();
+        grainParameters.position = positionParameter->get();
+        grainParameters.scanRate = scanRateParameter->get();
+        grainParameters.freeze = freezeParameter->get();
+        grainParameters.grainSizeMs = grainSizeParameter->get();
+        grainParameters.densityHz = densityParameter->get();
+        grainParameters.positionScatter = positionScatterParameter->get();
+        grainParameters.sizeScatter = sizeScatterParameter->get();
+        grainParameters.pitchScatterSemitones = pitchScatterParameter->get();
+        grainParameters.reverseProbability = reverseProbabilityParameter->get();
+        grainParameters.stereoWidth = stereoWidthParameter->get();
+        grainParameters.attackSeconds = attackParameter->get();
+        grainParameters.decaySeconds = decayParameter->get();
+        grainParameters.sustain = sustainParameter->get();
+        grainParameters.releaseSeconds = releaseParameter->get();
+
+        grainScheduler.render(
             voiceAllocator.getChannelPointers(),
             VoiceAllocator::numControlChannels,
+            buffer.getNumSamples(),
+            VoiceAllocator::maxVoices,
+            VoiceAllocator::triggerOffset,
+            VoiceAllocator::gateOffset,
+            VoiceAllocator::pitchOffset,
+            VoiceAllocator::velocityOffset,
+            grainParameters,
+            loadedSourceSampleRate.load(),
+            loadedSourceFrames.load());
+
+        const auto newActiveGrainCount = grainScheduler.getActiveGrainCount();
+
+        if (activeGrainCount.exchange(newActiveGrainCount) != newActiveGrainCount)
+            triggerAsyncUpdate();
+
+        std::copy_n(
+            voiceAllocator.getChannelPointers(),
+            VoiceAllocator::numControlChannels,
+            dspInputPointers.begin());
+        std::copy_n(
+            grainScheduler.getChannelPointers(),
+            GrainScheduler::numControlChannels,
+            dspInputPointers.begin() + VoiceAllocator::numControlChannels);
+
+        runtime->process(
+            dspInputPointers.data(),
+            dspInputPointers.size(),
             const_cast<float**>(buffer.getArrayOfWritePointers()),
             buffer.getNumChannels(),
             buffer.getNumSamples(),
@@ -439,7 +533,7 @@ void EffectsPluginProcessor::handleAsyncUpdate()
 
     state.insert_or_assign("meters", elem::js::Object {
         { "activeVoices", elem::js::Number(activeVoiceCount.load()) },
-        { "activeGrains", elem::js::Number(0) },
+        { "activeGrains", elem::js::Number(activeGrainCount.load()) },
         { "cpuOverload", elem::js::Value(false) }
     });
 
@@ -541,6 +635,8 @@ void EffectsPluginProcessor::applyPendingSampleResult()
 
     loadedSampleBuffer = std::move(result->monoBuffer);
     loadedSampleResourceId = "sample:" + result->metadata.sampleId;
+    loadedSourceSampleRate.store(result->metadata.sampleRate);
+    loadedSourceFrames.store(result->metadata.numFrames);
     registerLoadedSample();
     state.insert_or_assign("sample", makeSampleState(*result, "ready"));
 }

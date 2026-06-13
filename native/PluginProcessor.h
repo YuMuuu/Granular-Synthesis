@@ -8,7 +8,9 @@
 
 #include "SampleLoader.h"
 #include "VoiceAllocator.h"
+#include "GrainScheduler.h"
 
+#include <array>
 #include <mutex>
 #include <optional>
 
@@ -97,10 +99,30 @@ private:
     juce::String loadedSampleResourceId;
     SampleLoader sampleLoader;
     VoiceAllocator voiceAllocator;
+    GrainScheduler grainScheduler;
+    std::array<const float*, VoiceAllocator::numControlChannels + GrainScheduler::numControlChannels> dspInputPointers {};
     juce::AudioParameterFloat* rootNoteParameter = nullptr;
     juce::AudioParameterFloat* transposeParameter = nullptr;
     juce::AudioParameterFloat* releaseParameter = nullptr;
+    juce::AudioParameterFloat* regionStartParameter = nullptr;
+    juce::AudioParameterFloat* regionEndParameter = nullptr;
+    juce::AudioParameterFloat* positionParameter = nullptr;
+    juce::AudioParameterFloat* scanRateParameter = nullptr;
+    juce::AudioParameterBool* freezeParameter = nullptr;
+    juce::AudioParameterFloat* grainSizeParameter = nullptr;
+    juce::AudioParameterFloat* densityParameter = nullptr;
+    juce::AudioParameterFloat* positionScatterParameter = nullptr;
+    juce::AudioParameterFloat* sizeScatterParameter = nullptr;
+    juce::AudioParameterFloat* pitchScatterParameter = nullptr;
+    juce::AudioParameterFloat* reverseProbabilityParameter = nullptr;
+    juce::AudioParameterFloat* stereoWidthParameter = nullptr;
+    juce::AudioParameterFloat* attackParameter = nullptr;
+    juce::AudioParameterFloat* decayParameter = nullptr;
+    juce::AudioParameterFloat* sustainParameter = nullptr;
+    std::atomic<double> loadedSourceSampleRate { 0.0 };
+    std::atomic<int64_t> loadedSourceFrames { 0 };
     std::atomic<int> activeVoiceCount { 0 };
+    std::atomic<int> activeGrainCount { 0 };
 
     //==============================================================================
     // A simple "dirty list" abstraction here for propagating realtime parameter

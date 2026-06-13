@@ -16,19 +16,16 @@ const core = new Renderer((batch: RenderBatch) => {
 let prevState: DspState | null = null;
 
 const maxVoices = 16;
-const triggerOffset = 0;
-const gateOffset = maxVoices;
-const pitchOffset = maxVoices * 2;
-const velocityOffset = maxVoices * 3;
+const maxGrains = 128;
+const grainControlOffset = maxVoices * 4;
+const grainPositionOffset = grainControlOffset;
+const grainPhaseOffset = grainControlOffset + maxGrains;
+const grainLeftGainOffset = grainControlOffset + maxGrains * 2;
+const grainRightGainOffset = grainControlOffset + maxGrains * 3;
 
 function readNumber(state: DspState, key: string, fallback: number): number {
   const value = state[key];
   return typeof value === 'number' ? value : fallback;
-}
-
-function readSampleNumber(state: DspState, key: 'sampleRate' | 'numFrames'): number {
-  const value = state.sample?.[key];
-  return typeof value === 'number' ? value : 0;
 }
 
 function readSampleString(state: DspState, key: 'status' | 'resourceId'): string {
@@ -41,15 +38,9 @@ function graphSignature(state: DspState): string {
     sampleRate: state.sampleRate,
     sampleStatus: readSampleString(state, 'status'),
     resourceId: readSampleString(state, 'resourceId'),
-    sourceSampleRate: readSampleNumber(state, 'sampleRate'),
-    numFrames: readSampleNumber(state, 'numFrames'),
-    regionStart: readNumber(state, 'regionStart', 0),
-    regionEnd: readNumber(state, 'regionEnd', 1),
-    attack: readNumber(state, 'attack', 0.01),
-    decay: readNumber(state, 'decay', 0.1),
-    sustain: readNumber(state, 'sustain', 0.8),
-    release: readNumber(state, 'release', 0.5),
-    stereoWidth: readNumber(state, 'stereoWidth', 0.5),
+    windowType: readNumber(state, 'windowType', 0),
+    density: readNumber(state, 'density', 20),
+    grainSize: readNumber(state, 'grainSize', 100),
     outputGain: readNumber(state, 'outputGain', -6),
   });
 }
@@ -58,63 +49,91 @@ function shouldRender(prevState: DspState | null, nextState: DspState) {
   return prevState === null || graphSignature(prevState) !== graphSignature(nextState);
 }
 
-function param(state: DspState, key: string, fallback: number) {
-  return el.const({key: `param:${key}`, value: readNumber(state, key, fallback)});
+function blackman(phase: ElemNode): ElemNode {
+  return el.add(
+    0.42,
+    el.mul(-0.5, el.cos(el.mul(2 * Math.PI, phase))),
+    el.mul(0.08, el.cos(el.mul(4 * Math.PI, phase))),
+  );
+}
+
+function tukey(phase: ElemNode): ElemNode {
+  const alpha = 0.5;
+  const left = el.mul(
+    0.5,
+    el.add(1, el.cos(el.mul(Math.PI, el.sub(el.div(el.mul(2, phase), alpha), 1)))),
+  );
+  const right = el.mul(
+    0.5,
+    el.add(
+      1,
+      el.cos(el.mul(
+        Math.PI,
+        el.add(el.sub(el.div(el.mul(2, phase), alpha), el.div(2, alpha)), 1),
+      )),
+    ),
+  );
+
+  return el.select(
+    el.le(phase, alpha / 2),
+    left,
+    el.select(el.ge(phase, 1 - alpha / 2), right, 1),
+  );
+}
+
+function grainWindow(windowType: number, phase: ElemNode): ElemNode {
+  if (windowType === 1)
+    return blackman(phase);
+
+  if (windowType === 2)
+    return tukey(phase);
+
+  return el.hann(phase);
+}
+
+function windowMeanSquare(windowType: number): number {
+  if (windowType === 1)
+    return 0.3046;
+
+  if (windowType === 2)
+    return 0.6875;
+
+  return 0.375;
 }
 
 function renderGraph(state: DspState) {
   const resourceId = readSampleString(state, 'resourceId');
   const sampleReady = readSampleString(state, 'status') === 'ready';
-  const sourceSampleRate = readSampleNumber(state, 'sampleRate');
-  const numFrames = readSampleNumber(state, 'numFrames');
 
-  if (!sampleReady || resourceId.length === 0 || sourceSampleRate <= 0 || numFrames <= 1) {
+  if (!sampleReady || resourceId.length === 0) {
     const silence = el.mul(0, el.sr());
     return core.render(silence, silence);
   }
 
-  const regionStart = Math.max(0, Math.min(1, readNumber(state, 'regionStart', 0)));
-  const regionEnd = Math.max(regionStart, Math.min(1, readNumber(state, 'regionEnd', 1)));
-  const startOffset = Math.floor(regionStart * (numFrames - 1));
-  const stopOffset = Math.floor((1 - regionEnd) * (numFrames - 1));
-  const sampleRateCorrection = sourceSampleRate / state.sampleRate;
-  const attack = param(state, 'attack', 0.01);
-  const decay = param(state, 'decay', 0.1);
-  const sustain = param(state, 'sustain', 0.8);
-  const release = param(state, 'release', 0.5);
-  const outputGain = el.db2gain(param(state, 'outputGain', -6));
-  const stereoWidth = Math.max(0, Math.min(1, readNumber(state, 'stereoWidth', 0.5)));
-  const leftVoices: ElemNode[] = [];
-  const rightVoices: ElemNode[] = [];
+  const windowType = Math.round(readNumber(state, 'windowType', 0));
+  const density = Math.max(1, readNumber(state, 'density', 20));
+  const grainSizeSeconds = Math.max(0.005, readNumber(state, 'grainSize', 100) / 1000);
+  const expectedOverlap = Math.max(1, density * grainSizeSeconds);
+  const overlapGain = 1 / Math.sqrt(expectedOverlap * windowMeanSquare(windowType));
+  const outputGain = Math.pow(10, readNumber(state, 'outputGain', -6) / 20);
+  const leftGrains: ElemNode[] = [];
+  const rightGrains: ElemNode[] = [];
 
-  for (let voice = 0; voice < maxVoices; voice += 1) {
-    const trigger = el.in({key: `voice:${voice}:trigger`, channel: triggerOffset + voice});
-    const gate = el.in({key: `voice:${voice}:gate`, channel: gateOffset + voice});
-    const pitch = el.in({key: `voice:${voice}:pitch`, channel: pitchOffset + voice});
-    const velocity = el.in({key: `voice:${voice}:velocity`, channel: velocityOffset + voice});
-    const reader = el.sample(
-      {
-        key: `voice:${voice}:sample`,
-        path: resourceId,
-        mode: 'trigger',
-        startOffset,
-        stopOffset,
-      },
-      trigger,
-      el.mul(sampleRateCorrection, pitch),
-    );
-    const retriggeredGate = el.mul(gate, el.sub(1, trigger));
-    const envelope = el.adsr(attack, decay, sustain, release, retriggeredGate);
-    const signal = el.mul(reader, envelope, velocity);
-    const pan = ((voice / (maxVoices - 1)) * 2 - 1) * stereoWidth;
+  for (let grain = 0; grain < maxGrains; grain += 1) {
+    const position = el.in({key: `grain:${grain}:position`, channel: grainPositionOffset + grain});
+    const phase = el.in({key: `grain:${grain}:phase`, channel: grainPhaseOffset + grain});
+    const leftGain = el.in({key: `grain:${grain}:leftGain`, channel: grainLeftGainOffset + grain});
+    const rightGain = el.in({key: `grain:${grain}:rightGain`, channel: grainRightGainOffset + grain});
+    const sample = el.table({key: `grain:${grain}:sample`, path: resourceId}, position);
+    const window = grainWindow(windowType, phase);
 
-    leftVoices.push(el.mul(signal, (1 - pan) * 0.5));
-    rightVoices.push(el.mul(signal, (1 + pan) * 0.5));
+    leftGrains.push(el.mul(sample, window, leftGain));
+    rightGrains.push(el.mul(sample, window, rightGain));
   }
 
-  const normalization = 1 / Math.sqrt(maxVoices);
-  const left = el.mul(normalization, outputGain, el.add(...leftVoices));
-  const right = el.mul(normalization, outputGain, el.add(...rightVoices));
+  const normalization = overlapGain * outputGain / Math.sqrt(maxVoices);
+  const left = el.mul(normalization, el.add(...leftGrains));
+  const right = el.mul(normalization, el.add(...rightGrains));
   return core.render(left, right);
 }
 
