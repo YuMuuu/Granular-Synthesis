@@ -3,9 +3,24 @@
 
 #include <elem/AudioBufferResource.h>
 
+#include <cmath>
+
 namespace
 {
 constexpr int stateSchemaVersion = 1;
+constexpr double fallbackTempoBpm = 120.0;
+
+double densityDivisionQuarterNotes(int index)
+{
+    constexpr std::array values { 0.125, 0.25, 0.5, 1.0, 2.0, 4.0 };
+    return values[static_cast<size_t>(juce::jlimit(0, static_cast<int>(values.size()) - 1, index))];
+}
+
+double scanDivisionQuarterNotes(int index)
+{
+    constexpr std::array values { 0.5, 1.0, 2.0, 4.0, 8.0, 16.0 };
+    return values[static_cast<size_t>(juce::jlimit(0, static_cast<int>(values.size()) - 1, index))];
+}
 
 elem::js::Value parameterValueToState(const juce::AudioProcessorParameter& parameter, float normalizedValue)
 {
@@ -83,6 +98,17 @@ elem::js::Object makeSampleState(const SampleLoadResult& result, const juce::Str
 }
 }
 
+struct EffectsPluginProcessor::RuntimeSlot
+{
+    RuntimeSlot(double sampleRate, int blockSize)
+        : runtime(std::make_unique<elem::Runtime<float>>(sampleRate, blockSize))
+    {
+    }
+
+    std::unique_ptr<elem::Runtime<float>> runtime;
+    std::atomic<unsigned int> users { 0 };
+};
+
 //==============================================================================
 // A quick helper for locating bundled asset files
 juce::File getAssetsDirectory()
@@ -114,7 +140,7 @@ public:
                 return {};
 
             const auto batch = elem::js::parseJSON (args.arguments[0].toString().toStdString());
-            const auto rc = processor.runtime->applyInstructions (batch);
+            const auto rc = processor.applyRuntimeInstructions(batch);
 
             if (rc != elem::ReturnCode::Ok())
                 processor.dispatchError ("Runtime Error", elem::ReturnCode::describe (rc));
@@ -162,6 +188,11 @@ EffectsPluginProcessor::EffectsPluginProcessor()
 {
     state.insert_or_assign("schemaVersion", elem::js::Number(stateSchemaVersion));
     state.insert_or_assign("sample", makeEmptySampleState());
+    state.insert_or_assign("randomSeed", elem::js::Number(grainScheduler.getRandomSeed()));
+    state.insert_or_assign("presets", elem::js::Object {
+        { "items", elem::js::Array() },
+        { "activePresetId", elem::js::String() }
+    });
     state.insert_or_assign("meters", elem::js::Object {
         { "activeVoices", elem::js::Number(0) },
         { "activeGrains", elem::js::Number(0) },
@@ -295,6 +326,14 @@ EffectsPluginProcessor::EffectsPluginProcessor()
             decayParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
         else if (paramId == elem::js::String("sustain"))
             sustainParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("syncEnabled"))
+            syncEnabledParameter = dynamic_cast<juce::AudioParameterBool*>(p);
+        else if (paramId == elem::js::String("densityDivision"))
+            densityDivisionParameter = dynamic_cast<juce::AudioParameterChoice*>(p);
+        else if (paramId == elem::js::String("scanDivision"))
+            scanDivisionParameter = dynamic_cast<juce::AudioParameterChoice*>(p);
+        else if (paramId == elem::js::String("phaseEnabled"))
+            phaseEnabledParameter = dynamic_cast<juce::AudioParameterBool*>(p);
 
         const auto normalizedValue = p->getValue();
         paramReadouts.emplace_back(ParameterReadout { normalizedValue, false });
@@ -302,6 +341,8 @@ EffectsPluginProcessor::EffectsPluginProcessor()
             static_cast<elem::js::String>(paramId),
             parameterValueToState(*p, normalizedValue));
     }
+
+    refreshPresetState();
 }
 
 EffectsPluginProcessor::~EffectsPluginProcessor()
@@ -372,6 +413,13 @@ void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 {
     voiceAllocator.prepare(samplesPerBlock);
     grainScheduler.prepare(samplesPerBlock, sampleRate);
+    phaseReconstructor.prepare(sampleRate);
+    setLatencySamples(PhaseReconstructor::latencySamples);
+    phaseSafetyBypassed = false;
+    phaseRecoverySamples = 0;
+    phaseMeterSamples = 0;
+    phaseMeterSeconds = 0.0;
+    cpuOverload.store(false);
 
     // Some hosts call `prepareToPlay` on the real-time thread, some call it on the main thread.
     // To address the discrepancy, we check whether anything has changed since our last known
@@ -380,9 +428,13 @@ void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     //
     // JUCE will synchronously handle the async update if it understands
     // that we're already on the main thread.
-    if (sampleRate != lastKnownSampleRate || samplesPerBlock != lastKnownBlockSize) {
-        lastKnownSampleRate = sampleRate;
-        lastKnownBlockSize = samplesPerBlock;
+    if (sampleRate != lastKnownSampleRate.load()
+        || samplesPerBlock != lastKnownBlockSize.load())
+    {
+        runtimeConfigRevision.fetch_add(1, std::memory_order_acq_rel);
+        lastKnownSampleRate.store(sampleRate, std::memory_order_relaxed);
+        lastKnownBlockSize.store(samplesPerBlock, std::memory_order_relaxed);
+        runtimeConfigRevision.fetch_add(1, std::memory_order_release);
 
         shouldInitialize.store(true);
     }
@@ -395,6 +447,7 @@ void EffectsPluginProcessor::releaseResources()
 {
     voiceAllocator.reset();
     grainScheduler.reset();
+    phaseReconstructor.reset();
     activeVoiceCount.store(0);
     activeGrainCount.store(0);
 }
@@ -411,8 +464,7 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     buffer.clear();
 
     // Process the elementary runtime
-    if (runtime != nullptr
-        && rootNoteParameter != nullptr
+    if (rootNoteParameter != nullptr
         && transposeParameter != nullptr
         && releaseParameter != nullptr
         && regionStartParameter != nullptr
@@ -430,16 +482,52 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         && attackParameter != nullptr
         && decayParameter != nullptr
         && sustainParameter != nullptr
+        && syncEnabledParameter != nullptr
+        && densityDivisionParameter != nullptr
+        && scanDivisionParameter != nullptr
+        && phaseEnabledParameter != nullptr
         && buffer.getNumSamples() <= voiceAllocator.getMaximumBlockSize()
         && buffer.getNumSamples() <= grainScheduler.getMaximumBlockSize())
     {
+        auto tempoBpm = fallbackTempoBpm;
+        auto tempoAvailable = false;
+        auto transportPlaying = false;
+
+        if (auto* playHead = getPlayHead())
+        {
+            if (const auto position = playHead->getPosition())
+            {
+                transportPlaying = position->getIsPlaying();
+
+                if (const auto bpm = position->getBpm())
+                {
+                    if (std::isfinite(*bpm) && *bpm > 0.0)
+                    {
+                        tempoBpm = *bpm;
+                        tempoAvailable = true;
+                    }
+                }
+            }
+        }
+
+        const auto tempoMilliBpm = static_cast<int>(std::round(tempoBpm * 1000.0));
+        const auto tempoChanged = hostTempoMilliBpm.exchange(tempoMilliBpm) != tempoMilliBpm;
+        const auto availabilityChanged =
+            hostTempoAvailable.exchange(tempoAvailable) != tempoAvailable;
+        const auto playingChanged =
+            hostTransportPlaying.exchange(transportPlaying) != transportPlaying;
+        const auto transportStateChanged = tempoChanged || availabilityChanged || playingChanged;
+
+        if (transportStateChanged)
+            triggerAsyncUpdate();
+
         voiceAllocator.render(
             midiMessages,
             buffer.getNumSamples(),
             rootNoteParameter->get(),
             transposeParameter->get(),
             releaseParameter->get(),
-            lastKnownSampleRate);
+            lastKnownSampleRate.load());
 
         const auto newActiveVoiceCount = voiceAllocator.getActiveVoiceCount();
 
@@ -463,6 +551,17 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         grainParameters.decaySeconds = decayParameter->get();
         grainParameters.sustain = sustainParameter->get();
         grainParameters.releaseSeconds = releaseParameter->get();
+
+        if (syncEnabledParameter->get())
+        {
+            const auto quarterNotesPerSecond = tempoBpm / 60.0;
+            grainParameters.densityHz = static_cast<float>(
+                quarterNotesPerSecond
+                / densityDivisionQuarterNotes(densityDivisionParameter->getIndex()));
+            grainParameters.scanRate = static_cast<float>(
+                quarterNotesPerSecond
+                / scanDivisionQuarterNotes(scanDivisionParameter->getIndex()));
+        }
 
         grainScheduler.render(
             voiceAllocator.getChannelPointers(),
@@ -491,14 +590,88 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
             GrainScheduler::numControlChannels,
             dspInputPointers.begin() + VoiceAllocator::numControlChannels);
 
-        runtime->process(
-            dspInputPointers.data(),
-            dspInputPointers.size(),
-            const_cast<float**>(buffer.getArrayOfWritePointers()),
-            buffer.getNumChannels(),
-            buffer.getNumSamples(),
-            nullptr
-        );
+        if (auto* runtimeLease = acquireRuntime(true))
+        {
+            const juce::ScopeGuard releaseLease {
+                [this, runtimeLease] { releaseRuntime(runtimeLease); }
+            };
+            runtimeLease->runtime->process(
+                dspInputPointers.data(),
+                dspInputPointers.size(),
+                const_cast<float**>(buffer.getArrayOfWritePointers()),
+                buffer.getNumChannels(),
+                buffer.getNumSamples(),
+                nullptr
+            );
+        }
+    }
+
+    const auto phaseRequested = phaseEnabledParameter != nullptr && phaseEnabledParameter->get();
+    const auto phaseStartTicks = juce::Time::getHighResolutionTicks();
+    const auto finite = phaseReconstructor.process(
+        buffer,
+        phaseRequested && !phaseSafetyBypassed);
+    const auto phaseElapsedSeconds =
+        juce::Time::highResolutionTicksToSeconds(
+            juce::Time::getHighResolutionTicks() - phaseStartTicks);
+
+    if (!phaseRequested)
+    {
+        phaseSafetyBypassed = false;
+        phaseRecoverySamples = 0;
+        phaseMeterSamples = 0;
+        phaseMeterSeconds = 0.0;
+
+        if (cpuOverload.exchange(false))
+            triggerAsyncUpdate();
+    }
+    else if (!finite)
+    {
+        phaseSafetyBypassed = true;
+        phaseRecoverySamples = 0;
+        phaseMeterSamples = 0;
+        phaseMeterSeconds = 0.0;
+
+        if (!cpuOverload.exchange(true))
+            triggerAsyncUpdate();
+    }
+    else if (phaseSafetyBypassed)
+    {
+        phaseRecoverySamples += buffer.getNumSamples();
+
+        if (phaseRecoverySamples >= static_cast<int>(lastKnownSampleRate.load()))
+        {
+            phaseSafetyBypassed = false;
+            phaseRecoverySamples = 0;
+            phaseMeterSamples = 0;
+            phaseMeterSeconds = 0.0;
+        }
+    }
+    else
+    {
+        phaseMeterSamples += buffer.getNumSamples();
+        phaseMeterSeconds += phaseElapsedSeconds;
+
+        if (phaseMeterSamples >= PhaseReconstructor::fftSize * 2)
+        {
+            const auto availableSeconds = phaseMeterSamples / lastKnownSampleRate.load();
+            const auto exceededBudget = phaseMeterSeconds > availableSeconds * 0.9;
+            phaseMeterSamples = 0;
+            phaseMeterSeconds = 0.0;
+
+            if (exceededBudget)
+            {
+                phaseSafetyBypassed = true;
+                phaseRecoverySamples = 0;
+
+                if (!cpuOverload.exchange(true))
+                    triggerAsyncUpdate();
+            }
+            else if (cpuOverload.exchange(false))
+            {
+                triggerAsyncUpdate();
+            }
+        }
     }
 }
 
@@ -519,22 +692,20 @@ void EffectsPluginProcessor::parameterGestureChanged (int, bool)
 //==============================================================================
 void EffectsPluginProcessor::handleAsyncUpdate()
 {
-    // First things first, we check the flag to identify if we should initialize the Elementary
-    // runtime and engine.
-    if (shouldInitialize.exchange(false)) {
-        // TODO: This is definitely not thread-safe! It could delete a Runtime instance while
-        // the real-time thread is using it. Depends on when the host will call prepareToPlay.
-        runtime = std::make_unique<elem::Runtime<float>>(lastKnownSampleRate, lastKnownBlockSize);
-        registerLoadedSample();
-        initJavaScriptEngine();
-    }
+    if (shouldInitialize.exchange(false))
+        rebuildRuntime();
 
     applyPendingSampleResult();
 
     state.insert_or_assign("meters", elem::js::Object {
         { "activeVoices", elem::js::Number(activeVoiceCount.load()) },
         { "activeGrains", elem::js::Number(activeGrainCount.load()) },
-        { "cpuOverload", elem::js::Value(false) }
+        { "cpuOverload", elem::js::Value(cpuOverload.load()) }
+    });
+    state.insert_or_assign("transport", elem::js::Object {
+        { "bpm", elem::js::Number(hostTempoMilliBpm.load() / 1000.0) },
+        { "tempoAvailable", elem::js::Value(hostTempoAvailable.load()) },
+        { "isPlaying", elem::js::Value(hostTransportPlaying.load()) }
     });
 
     // Next we iterate over the current parameter values to update our local state
@@ -574,6 +745,78 @@ void EffectsPluginProcessor::openSample(const juce::File& file)
     state.insert_or_assign("sample", std::move(sampleState));
     dispatchStateChange();
     sampleLoader.importFile(file);
+}
+
+void EffectsPluginProcessor::savePreset(const juce::String& name, bool saveAs)
+{
+    juce::String savedPresetId;
+    const auto presetId = saveAs ? juce::String() : activePresetId;
+    const auto result = presetStore.save(
+        presetId,
+        name,
+        capturePersistentState(),
+        grainScheduler.getRandomSeed(),
+        savedPresetId);
+
+    if (result.failed())
+    {
+        dispatchError("Preset Save Error", result.getErrorMessage().toStdString());
+        return;
+    }
+
+    activePresetId = savedPresetId;
+    refreshPresetState();
+    dispatchStateChange();
+}
+
+void EffectsPluginProcessor::loadPreset(const juce::String& presetId)
+{
+    juce::String error;
+    const auto preset = presetStore.load(presetId, error);
+
+    if (!preset.has_value())
+    {
+        dispatchError("Preset Load Error", error.toStdString());
+        refreshPresetState();
+        dispatchStateChange();
+        return;
+    }
+
+    grainScheduler.setRandomSeed(preset->randomSeed);
+    applyPersistentState(preset->state);
+    activePresetId = presetId;
+    refreshPresetState();
+    triggerAsyncUpdate();
+}
+
+void EffectsPluginProcessor::renamePreset(
+    const juce::String& presetId,
+    const juce::String& name)
+{
+    const auto result = presetStore.rename(presetId, name);
+
+    if (result.failed())
+        dispatchError("Preset Rename Error", result.getErrorMessage().toStdString());
+
+    refreshPresetState();
+    dispatchStateChange();
+}
+
+void EffectsPluginProcessor::deletePreset(const juce::String& presetId)
+{
+    const auto result = presetStore.remove(presetId);
+
+    if (result.failed())
+    {
+        dispatchError("Preset Delete Error", result.getErrorMessage().toStdString());
+    }
+    else if (activePresetId == presetId)
+    {
+        activePresetId.clear();
+    }
+
+    refreshPresetState();
+    dispatchStateChange();
 }
 
 void EffectsPluginProcessor::receiveSampleLoadResult(SampleLoadResult result)
@@ -643,14 +886,128 @@ void EffectsPluginProcessor::applyPendingSampleResult()
 
 void EffectsPluginProcessor::registerLoadedSample()
 {
-    if (runtime == nullptr || loadedSampleBuffer.getNumSamples() == 0 || loadedSampleResourceId.isEmpty())
+    if (loadedSampleBuffer.getNumSamples() == 0 || loadedSampleResourceId.isEmpty())
         return;
 
-    runtime->addSharedResource(
+    const auto resourceId = loadedSampleResourceId.toStdString();
+    auto resource = std::make_unique<elem::AudioBufferResource>(
+        loadedSampleBuffer.getWritePointer(0),
+        static_cast<size_t>(loadedSampleBuffer.getNumSamples()));
+    if (auto* runtimeLease = acquireRuntime(false))
+    {
+        const juce::ScopeGuard releaseLease {
+            [this, runtimeLease] { releaseRuntime(runtimeLease); }
+        };
+        runtimeLease->runtime->addSharedResource(resourceId, std::move(resource));
+    }
+}
+
+void EffectsPluginProcessor::registerLoadedSample(elem::Runtime<float>& targetRuntime)
+{
+    if (loadedSampleBuffer.getNumSamples() == 0 || loadedSampleResourceId.isEmpty())
+        return;
+
+    targetRuntime.addSharedResource(
         loadedSampleResourceId.toStdString(),
         std::make_unique<elem::AudioBufferResource>(
             loadedSampleBuffer.getWritePointer(0),
             static_cast<size_t>(loadedSampleBuffer.getNumSamples())));
+}
+
+int EffectsPluginProcessor::applyRuntimeInstructions(const elem::js::Array& batch)
+{
+    auto* runtimeLease = acquireRuntime(false);
+
+    if (runtimeLease == nullptr)
+        return elem::ReturnCode::Ok();
+
+    const juce::ScopeGuard releaseLease {
+        [this, runtimeLease] { releaseRuntime(runtimeLease); }
+    };
+    return runtimeLease->runtime->applyInstructions(batch);
+}
+
+elem::js::Object EffectsPluginProcessor::getRuntimeSnapshot()
+{
+    auto* runtimeLease = acquireRuntime(false);
+
+    if (runtimeLease == nullptr)
+        return {};
+
+    const juce::ScopeGuard releaseLease {
+        [this, runtimeLease] { releaseRuntime(runtimeLease); }
+    };
+    return runtimeLease->runtime->snapshot();
+}
+
+void EffectsPluginProcessor::rebuildRuntime()
+{
+    double sampleRate = 0.0;
+    int blockSize = 0;
+    uint32_t revisionBefore = 0;
+    uint32_t revisionAfter = 0;
+
+    do
+    {
+        revisionBefore = runtimeConfigRevision.load(std::memory_order_acquire);
+
+        if ((revisionBefore & 1u) != 0)
+        {
+            juce::Thread::yield();
+            continue;
+        }
+
+        sampleRate = lastKnownSampleRate.load(std::memory_order_relaxed);
+        blockSize = lastKnownBlockSize.load(std::memory_order_relaxed);
+        revisionAfter = runtimeConfigRevision.load(std::memory_order_acquire);
+    }
+    while (revisionBefore != revisionAfter || (revisionAfter & 1u) != 0);
+
+    if (sampleRate <= 0.0 || blockSize <= 0)
+        return;
+
+    auto nextRuntime = std::make_unique<RuntimeSlot>(sampleRate, blockSize);
+    registerLoadedSample(*nextRuntime->runtime);
+    std::unique_ptr<RuntimeSlot> retiredRuntime;
+
+    {
+        const juce::SpinLock::ScopedLockType runtimeGuard(runtimeSwapLock);
+        retiredRuntime = std::move(runtimeSlot);
+        runtimeSlot = std::move(nextRuntime);
+    }
+
+    while (retiredRuntime != nullptr && retiredRuntime->users.load() != 0)
+        juce::Thread::yield();
+
+    retiredRuntime.reset();
+    initJavaScriptEngine();
+}
+
+EffectsPluginProcessor::RuntimeSlot* EffectsPluginProcessor::acquireRuntime(bool tryOnly)
+{
+    if (tryOnly)
+    {
+        const juce::SpinLock::ScopedTryLockType runtimeGuard(runtimeSwapLock);
+
+        if (!runtimeGuard.isLocked() || runtimeSlot == nullptr)
+            return nullptr;
+
+        runtimeSlot->users.fetch_add(1, std::memory_order_acquire);
+        return runtimeSlot.get();
+    }
+
+    const juce::SpinLock::ScopedLockType runtimeGuard(runtimeSwapLock);
+
+    if (runtimeSlot == nullptr)
+        return nullptr;
+
+    runtimeSlot->users.fetch_add(1, std::memory_order_acquire);
+    return runtimeSlot.get();
+}
+
+void EffectsPluginProcessor::releaseRuntime(RuntimeSlot* slot)
+{
+    slot->users.fetch_sub(1, std::memory_order_release);
 }
 
 void EffectsPluginProcessor::restoreSampleFromState(const elem::js::Object& restoredState)
@@ -676,6 +1033,81 @@ void EffectsPluginProcessor::restoreSampleFromState(const elem::js::Object& rest
     loadingState.insert_or_assign("error", elem::js::String());
     state.insert_or_assign("sample", std::move(loadingState));
     sampleLoader.restoreSample(sampleId);
+}
+
+elem::js::Object EffectsPluginProcessor::capturePersistentState() const
+{
+    elem::js::Object persistentState {
+        { "schemaVersion", elem::js::Number(stateSchemaVersion) },
+        { "randomSeed", elem::js::Number(grainScheduler.getRandomSeed()) }
+    };
+    const auto sampleIt = state.find("sample");
+
+    if (sampleIt != state.end())
+        persistentState.insert_or_assign("sample", sampleIt->second);
+
+    for (auto* parameter : getParameters())
+    {
+        if (auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
+        {
+            persistentState.insert_or_assign(
+                parameterWithId->paramID.toStdString(),
+                parameterValueToState(*parameter, parameter->getValue()));
+        }
+    }
+
+    return persistentState;
+}
+
+void EffectsPluginProcessor::applyPersistentState(const elem::js::Object& restoredState)
+{
+    for (auto* parameter : getParameters())
+    {
+        auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+
+        if (parameterWithId == nullptr)
+            continue;
+
+        const auto id = parameterWithId->paramID.toStdString();
+        const auto it = restoredState.find(id);
+
+        if (it == restoredState.end())
+            continue;
+
+        if (auto normalizedValue = stateValueToNormalized(*parameter, it->second))
+        {
+            parameter->setValueNotifyingHost(*normalizedValue);
+            state.insert_or_assign(id, parameterValueToState(*parameter, *normalizedValue));
+        }
+    }
+
+    const auto seedIt = restoredState.find("randomSeed");
+
+    if (seedIt != restoredState.end() && seedIt->second.isNumber())
+        grainScheduler.setRandomSeed(
+            static_cast<uint32_t>(static_cast<elem::js::Number>(seedIt->second)));
+
+    state.insert_or_assign("randomSeed", elem::js::Number(grainScheduler.getRandomSeed()));
+    restoreSampleFromState(restoredState);
+}
+
+void EffectsPluginProcessor::refreshPresetState()
+{
+    elem::js::Array items;
+
+    for (const auto& preset : presetStore.list())
+    {
+        items.emplace_back(elem::js::Object {
+            { "id", preset.id.toStdString() },
+            { "name", preset.name.toStdString() },
+            { "modifiedAt", preset.modifiedAt.toStdString() }
+        });
+    }
+
+    state.insert_or_assign("presets", elem::js::Object {
+        { "items", std::move(items) },
+        { "activePresetId", activePresetId.toStdString() }
+    });
 }
 
 void EffectsPluginProcessor::initJavaScriptEngine()
@@ -742,7 +1174,9 @@ void EffectsPluginProcessor::initJavaScriptEngine()
 })();
 )script";
 
-    auto expr = juce::String(kHydrateScript).replace("%", elem::js::serialize(elem::js::serialize(runtime->snapshot()))).toStdString();
+    auto expr = juce::String(kHydrateScript)
+        .replace("%", elem::js::serialize(elem::js::serialize(getRuntimeSnapshot())))
+        .toStdString();
     jsContext->execute(expr);
 }
 
@@ -762,7 +1196,7 @@ void EffectsPluginProcessor::dispatchStateChange()
     // serialize produces the payload we want, the second serialize ensures we can replace
     // the % character in the above block and produce a valid javascript expression.
     auto localState = state;
-    localState.insert_or_assign("sampleRate", lastKnownSampleRate);
+    localState.insert_or_assign("sampleRate", lastKnownSampleRate.load());
 
     auto expr = juce::String(kDispatchScript).replace("%", elem::js::serialize(elem::js::serialize(localState))).toStdString();
 
@@ -811,19 +1245,7 @@ void EffectsPluginProcessor::dispatchError(std::string const& name, std::string 
 //==============================================================================
 void EffectsPluginProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    auto currentState = state;
-    currentState.insert_or_assign("schemaVersion", elem::js::Number(stateSchemaVersion));
-
-    for (auto* parameter : getParameters())
-    {
-        if (auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
-        {
-            currentState.insert_or_assign(
-                parameterWithId->paramID.toStdString(),
-                parameterValueToState(*parameter, parameter->getValue()));
-        }
-    }
-
+    auto currentState = capturePersistentState();
     auto serialized = elem::js::serialize(currentState);
     destData.replaceAll((void *) serialized.c_str(), serialized.size());
 }
@@ -834,28 +1256,9 @@ void EffectsPluginProcessor::setStateInformation (const void* data, int sizeInBy
         auto str = std::string(static_cast<const char*>(data), sizeInBytes);
         auto parsed = elem::js::parseJSON(str);
         auto o = parsed.getObject();
-
-        for (auto* parameter : getParameters())
-        {
-            auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
-
-            if (parameterWithId == nullptr)
-                continue;
-
-            const auto id = parameterWithId->paramID.toStdString();
-            const auto it = o.find(id);
-
-            if (it == o.end())
-                continue;
-
-            if (auto normalizedValue = stateValueToNormalized(*parameter, it->second))
-            {
-                parameter->setValueNotifyingHost(*normalizedValue);
-                state.insert_or_assign(id, parameterValueToState(*parameter, *normalizedValue));
-            }
-        }
-
-        restoreSampleFromState(o);
+        applyPersistentState(o);
+        activePresetId.clear();
+        refreshPresetState();
         triggerAsyncUpdate();
     } catch(...) {
         // Failed to parse the incoming state, or the state we did parse was not actually

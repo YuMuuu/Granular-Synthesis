@@ -150,6 +150,32 @@ void WebViewEditor::handleNativeMessage(const juce::var& args)
 
     if (eventName == "openSample")
         openSampleChooser();
+
+    if (array->size() <= 1)
+        return;
+
+    const auto* payload = array->getReference(1).getDynamicObject();
+
+    if (payload == nullptr)
+        return;
+
+    auto* processor = dynamic_cast<EffectsPluginProcessor*>(getAudioProcessor());
+
+    if (processor == nullptr)
+        return;
+
+    if (eventName == "savePreset")
+        processor->savePreset(payload->getProperty("name").toString(), false);
+    else if (eventName == "savePresetAs")
+        processor->savePreset(payload->getProperty("name").toString(), true);
+    else if (eventName == "loadPreset")
+        processor->loadPreset(payload->getProperty("presetId").toString());
+    else if (eventName == "renamePreset")
+        processor->renamePreset(
+            payload->getProperty("presetId").toString(),
+            payload->getProperty("name").toString());
+    else if (eventName == "deletePreset")
+        processor->deletePreset(payload->getProperty("presetId").toString());
 }
 
 void WebViewEditor::handleSetParameterValueEvent(const juce::var& e)

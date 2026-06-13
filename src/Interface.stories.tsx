@@ -5,6 +5,13 @@ import Interface from './Interface';
 const defaultState = {
   grainSize: 100,
   density: 20,
+  presets: {
+    activePresetId: 'preset-1',
+    items: [
+      { id: 'preset-1', name: 'Wide Texture', modifiedAt: '2026-06-13T00:00:00Z' },
+      { id: 'preset-2', name: 'Frozen Cloud', modifiedAt: '2026-06-13T00:00:00Z' },
+    ],
+  },
   sample: {
     status: 'ready' as const,
     sampleId: 'demo',
@@ -30,6 +37,11 @@ const meta = {
     state: defaultState,
     error: null,
     openSample: () => {},
+    savePreset: () => {},
+    savePresetAs: () => {},
+    loadPreset: () => {},
+    renamePreset: () => {},
+    deletePreset: () => {},
     requestParamValueUpdate: () => {},
     resetErrorState: () => {},
   },

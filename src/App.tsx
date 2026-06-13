@@ -22,6 +22,13 @@ function openSample() {
   globalThis.__postNativeMessage__?.('openSample');
 }
 
+function postPresetMessage(
+  message: 'savePreset' | 'savePresetAs' | 'loadPreset' | 'renamePreset' | 'deletePreset',
+  payload: Record<string, unknown>,
+) {
+  globalThis.__postNativeMessage__?.(message, payload);
+}
+
 if (import.meta.env.DEV && import.meta.hot) {
   import.meta.hot.on('reload-dsp', () => {
     console.log('Sending reload dsp message');
@@ -49,6 +56,11 @@ export default function App() {
       state={state}
       error={error}
       openSample={openSample}
+      savePreset={(name) => postPresetMessage('savePreset', { name })}
+      savePresetAs={(name) => postPresetMessage('savePresetAs', { name })}
+      loadPreset={(presetId) => postPresetMessage('loadPreset', { presetId })}
+      renamePreset={(presetId, name) => postPresetMessage('renamePreset', { presetId, name })}
+      deletePreset={(presetId) => postPresetMessage('deletePreset', { presetId })}
       requestParamValueUpdate={requestParamValueUpdate}
       resetErrorState={() => errorStore.setState({ error: null })} />
   );

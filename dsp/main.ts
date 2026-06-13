@@ -28,6 +28,33 @@ function readNumber(state: DspState, key: string, fallback: number): number {
   return typeof value === 'number' ? value : fallback;
 }
 
+function readBoolean(state: DspState, key: string, fallback: boolean): boolean {
+  const value = state[key];
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function readTransportBpm(state: DspState): number {
+  const transport = state.transport;
+
+  if (typeof transport !== 'object' || transport === null || Array.isArray(transport))
+    return 120;
+
+  const bpm = transport.bpm;
+  return typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0 ? bpm : 120;
+}
+
+function effectiveDensity(state: DspState): number {
+  if (!readBoolean(state, 'syncEnabled', false))
+    return Math.max(1, readNumber(state, 'density', 20));
+
+  const divisionQuarterNotes = [0.125, 0.25, 0.5, 1, 2, 4];
+  const index = Math.max(0, Math.min(
+    divisionQuarterNotes.length - 1,
+    Math.round(readNumber(state, 'densityDivision', 2)),
+  ));
+  return (readTransportBpm(state) / 60) / divisionQuarterNotes[index];
+}
+
 function readSampleString(state: DspState, key: 'status' | 'resourceId'): string {
   const value = state.sample?.[key];
   return typeof value === 'string' ? value : '';
@@ -39,7 +66,7 @@ function graphSignature(state: DspState): string {
     sampleStatus: readSampleString(state, 'status'),
     resourceId: readSampleString(state, 'resourceId'),
     windowType: readNumber(state, 'windowType', 0),
-    density: readNumber(state, 'density', 20),
+    density: effectiveDensity(state),
     grainSize: readNumber(state, 'grainSize', 100),
     outputGain: readNumber(state, 'outputGain', -6),
   });
@@ -111,7 +138,7 @@ function renderGraph(state: DspState) {
   }
 
   const windowType = Math.round(readNumber(state, 'windowType', 0));
-  const density = Math.max(1, readNumber(state, 'density', 20));
+  const density = effectiveDensity(state);
   const grainSizeSeconds = Math.max(0.005, readNumber(state, 'grainSize', 100) / 1000);
   const expectedOverlap = Math.max(1, density * grainSizeSeconds);
   const overlapGain = 1 / Math.sqrt(expectedOverlap * windowMeanSquare(windowType));

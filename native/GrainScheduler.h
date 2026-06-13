@@ -58,6 +58,8 @@ public:
     const float** getChannelPointers() noexcept { return channelPointers.data(); }
     int getActiveGrainCount() const noexcept;
     int getMaximumBlockSize() const noexcept { return controls.getNumSamples(); }
+    uint32_t getRandomSeed() const noexcept { return randomSeed; }
+    void setRandomSeed(uint32_t seed) noexcept;
 
 private:
     struct GrainState
@@ -124,5 +126,6 @@ private:
     std::array<const float*, numControlChannels> channelPointers {};
     double hostSampleRate = 0.0;
     int64_t ageCounter = 0;
-    uint32_t randomState = 0x47525359u;
+    uint32_t randomSeed = 0x47525359u;
+    uint32_t randomState = randomSeed;
 };

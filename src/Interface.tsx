@@ -1,4 +1,4 @@
-import type { SVGProps } from 'react';
+import { useState, type SVGProps } from 'react';
 import { XCircleIcon, XMarkIcon } from '@heroicons/react/20/solid'
 
 import Knob from './Knob';
@@ -134,6 +134,11 @@ type InterfaceProps = {
   state: PluginState;
   error: PluginError | null;
   openSample: () => void;
+  savePreset: (name: string) => void;
+  savePresetAs: (name: string) => void;
+  loadPreset: (presetId: string) => void;
+  renamePreset: (presetId: string, name: string) => void;
+  deletePreset: (presetId: string) => void;
   requestParamValueUpdate: (paramId: string, value: number) => void;
   resetErrorState: () => void;
 };
@@ -148,6 +153,16 @@ export default function Interface(props: InterfaceProps) {
   const params = manifest.parameters as ManifestParameter[];
   const sample = props.state.sample;
   const sampleName = sample?.originalFileName || sample?.fileName || 'No sample loaded';
+  const presets = props.state.presets?.items;
+  const presetItems = presets ?? [];
+  const activePresetId = props.state.presets?.activePresetId ?? '';
+  const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [presetName, setPresetName] = useState('');
+  const effectivePresetId = presetItems.some((preset) => preset.id === selectedPresetId)
+    ? selectedPresetId
+    : activePresetId;
+  const selectedPreset = presetItems.find((preset) => preset.id === effectivePresetId);
+  const effectivePresetName = presetName || selectedPreset?.name || '';
 
   return (
     <div className="w-full h-screen min-w-[492px] min-h-[238px] bg-slate-800 bg-mesh p-8">
@@ -159,6 +174,37 @@ export default function Interface(props: InterfaceProps) {
       </div>
       <div className="flex flex-col h-4/5">
         {props.error && (<ErrorAlert message={props.error.message} reset={props.resetErrorState} />)}
+        <div className="mb-3 flex items-center gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
+          <select
+            aria-label="Preset"
+            className="min-w-44 rounded bg-slate-800 p-2"
+            value={effectivePresetId}
+            onChange={(event) => {
+              const presetId = event.target.value;
+              const preset = presetItems.find((item) => item.id === presetId);
+              setSelectedPresetId(presetId);
+              setPresetName(preset?.name ?? '');
+            }}
+          >
+            <option value="">No preset</option>
+            {presetItems.map((preset) => (
+              <option key={preset.id} value={preset.id}>{preset.name}</option>
+            ))}
+          </select>
+          <input
+            aria-label="Preset name"
+            className="min-w-0 flex-1 rounded bg-slate-800 p-2"
+            maxLength={80}
+            placeholder="Preset name"
+            value={effectivePresetName}
+            onChange={(event) => setPresetName(event.target.value)}
+          />
+          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!effectivePresetId} onClick={() => props.loadPreset(effectivePresetId)}>Load</button>
+          <button type="button" className="rounded bg-pink-500 px-3 py-2 font-semibold text-slate-950 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePreset(effectivePresetName)}>Save</button>
+          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePresetAs(effectivePresetName)}>Save As</button>
+          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!selectedPreset || !effectivePresetName.trim()} onClick={() => props.renamePreset(effectivePresetId, effectivePresetName)}>Rename</button>
+          <button type="button" className="rounded bg-red-950 px-3 py-2 text-red-200 disabled:opacity-40" disabled={!selectedPreset} onClick={() => props.deletePreset(effectivePresetId)}>Delete</button>
+        </div>
         <div className="mb-4 flex items-center gap-4 rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
           <button
             type="button"
@@ -184,8 +230,13 @@ export default function Interface(props: InterfaceProps) {
             )}
           </div>
           <div className="text-right text-xs text-slate-400">
+            <div>
+              {props.state.transport?.bpm.toFixed(1) ?? '120.0'} BPM
+              {props.state.transport?.tempoAvailable === false ? ' fallback' : ''}
+            </div>
             <div>Voices {props.state.meters?.activeVoices ?? 0}/16</div>
             <div>Grains {props.state.meters?.activeGrains ?? 0}/128</div>
+            {props.state.meters?.cpuOverload && <div className="font-semibold text-red-400">CPU overload</div>}
           </div>
         </div>
         <div className="flex flex-1">

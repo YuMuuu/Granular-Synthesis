@@ -60,7 +60,9 @@ endif()
 target_sources(${TARGET_NAME}
   PRIVATE
   PluginProcessor.cpp
+  PhaseReconstructor.cpp
   GrainScheduler.cpp
+  PresetStore.cpp
   SampleLoader.cpp
   VoiceAllocator.cpp
   WebViewEditor.cpp)

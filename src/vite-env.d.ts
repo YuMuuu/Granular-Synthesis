@@ -23,10 +23,29 @@ declare global {
     cpuOverload: boolean;
   };
 
+  type TransportState = {
+    bpm: number;
+    tempoAvailable: boolean;
+    isPlaying: boolean;
+  };
+
+  type PresetSummary = {
+    id: string;
+    name: string;
+    modifiedAt: string;
+  };
+
+  type PresetState = {
+    items: PresetSummary[];
+    activePresetId: string;
+  };
+
   type PluginState = Record<string, unknown> & {
     schemaVersion?: number;
     sample?: SampleState;
     meters?: MeterState;
+    transport?: TransportState;
+    presets?: PresetState;
   };
 
   type PluginError = {

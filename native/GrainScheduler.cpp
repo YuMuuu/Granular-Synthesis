@@ -47,7 +47,13 @@ void GrainScheduler::reset()
     voices = {};
     controls.clear();
     ageCounter = 0;
-    randomState = 0x47525359u;
+    randomState = randomSeed;
+}
+
+void GrainScheduler::setRandomSeed(uint32_t seed) noexcept
+{
+    randomSeed = seed != 0 ? seed : 0x47525359u;
+    randomState = randomSeed;
 }
 
 void GrainScheduler::render(

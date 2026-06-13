@@ -9,6 +9,8 @@
 #include "SampleLoader.h"
 #include "VoiceAllocator.h"
 #include "GrainScheduler.h"
+#include "PhaseReconstructor.h"
+#include "PresetStore.h"
 
 #include <array>
 #include <mutex>
@@ -76,23 +78,39 @@ public:
     void dispatchStateChange();
     void dispatchError(std::string const& name, std::string const& message);
     void openSample(const juce::File& file);
+    void savePreset(const juce::String& name, bool saveAs);
+    void loadPreset(const juce::String& presetId);
+    void renamePreset(const juce::String& presetId, const juce::String& name);
+    void deletePreset(const juce::String& presetId);
 
 private:
     friend class NativeBridgeObject;
     void receiveSampleLoadResult(SampleLoadResult result);
     void applyPendingSampleResult();
     void registerLoadedSample();
+    void registerLoadedSample(elem::Runtime<float>& targetRuntime);
     void restoreSampleFromState(const elem::js::Object& restoredState);
+    int applyRuntimeInstructions(const elem::js::Array& batch);
+    elem::js::Object getRuntimeSnapshot();
+    void rebuildRuntime();
+    struct RuntimeSlot;
+    RuntimeSlot* acquireRuntime(bool tryOnly);
+    static void releaseRuntime(RuntimeSlot* slot);
+    elem::js::Object capturePersistentState() const;
+    void applyPersistentState(const elem::js::Object& restoredState);
+    void refreshPresetState();
 
     //==============================================================================
     std::atomic<bool> shouldInitialize { false };
-    double lastKnownSampleRate = 0;
-    int lastKnownBlockSize = 0;
+    std::atomic<uint32_t> runtimeConfigRevision { 0 };
+    std::atomic<double> lastKnownSampleRate { 0.0 };
+    std::atomic<int> lastKnownBlockSize { 0 };
 
     elem::js::Object state;
     std::unique_ptr<juce::JavascriptEngine> jsContext;
 
-    std::unique_ptr<elem::Runtime<float>> runtime;
+    juce::SpinLock runtimeSwapLock;
+    std::unique_ptr<RuntimeSlot> runtimeSlot;
     std::mutex sampleResultMutex;
     std::optional<SampleLoadResult> pendingSampleResult;
     juce::AudioBuffer<float> loadedSampleBuffer;
@@ -100,6 +118,9 @@ private:
     SampleLoader sampleLoader;
     VoiceAllocator voiceAllocator;
     GrainScheduler grainScheduler;
+    PhaseReconstructor phaseReconstructor;
+    PresetStore presetStore;
+    juce::String activePresetId;
     std::array<const float*, VoiceAllocator::numControlChannels + GrainScheduler::numControlChannels> dspInputPointers {};
     juce::AudioParameterFloat* rootNoteParameter = nullptr;
     juce::AudioParameterFloat* transposeParameter = nullptr;
@@ -119,10 +140,22 @@ private:
     juce::AudioParameterFloat* attackParameter = nullptr;
     juce::AudioParameterFloat* decayParameter = nullptr;
     juce::AudioParameterFloat* sustainParameter = nullptr;
+    juce::AudioParameterBool* syncEnabledParameter = nullptr;
+    juce::AudioParameterChoice* densityDivisionParameter = nullptr;
+    juce::AudioParameterChoice* scanDivisionParameter = nullptr;
+    juce::AudioParameterBool* phaseEnabledParameter = nullptr;
     std::atomic<double> loadedSourceSampleRate { 0.0 };
     std::atomic<int64_t> loadedSourceFrames { 0 };
     std::atomic<int> activeVoiceCount { 0 };
     std::atomic<int> activeGrainCount { 0 };
+    std::atomic<int> hostTempoMilliBpm { 120000 };
+    std::atomic<bool> hostTempoAvailable { false };
+    std::atomic<bool> hostTransportPlaying { false };
+    std::atomic<bool> cpuOverload { false };
+    bool phaseSafetyBypassed = false;
+    int phaseRecoverySamples = 0;
+    int phaseMeterSamples = 0;
+    double phaseMeterSeconds = 0.0;
 
     //==============================================================================
     // A simple "dirty list" abstraction here for propagating realtime parameter
