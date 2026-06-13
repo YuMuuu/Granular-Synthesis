@@ -6,6 +6,12 @@ export type JsonObject = {
 
 export type DspState = {
   sampleRate: number;
+  sample?: {
+    status?: JsonValue;
+    resourceId?: JsonValue;
+    sampleRate?: JsonValue;
+    numFrames?: JsonValue;
+  };
 } & JsonObject;
 
 export type HydratedNode = {

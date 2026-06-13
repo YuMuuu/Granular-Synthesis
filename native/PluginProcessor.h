@@ -7,6 +7,7 @@
 #include <elem/Runtime.h>
 
 #include "SampleLoader.h"
+#include "VoiceAllocator.h"
 
 #include <mutex>
 #include <optional>
@@ -95,6 +96,11 @@ private:
     juce::AudioBuffer<float> loadedSampleBuffer;
     juce::String loadedSampleResourceId;
     SampleLoader sampleLoader;
+    VoiceAllocator voiceAllocator;
+    juce::AudioParameterFloat* rootNoteParameter = nullptr;
+    juce::AudioParameterFloat* transposeParameter = nullptr;
+    juce::AudioParameterFloat* releaseParameter = nullptr;
+    std::atomic<int> activeVoiceCount { 0 };
 
     //==============================================================================
     // A simple "dirty list" abstraction here for propagating realtime parameter

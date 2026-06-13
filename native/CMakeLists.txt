@@ -14,6 +14,10 @@ add_subdirectory(elementary/runtime)
 
 juce_add_plugin(${TARGET_NAME}
   COPY_PLUGIN_AFTER_BUILD FALSE       # We enable this manually below after adding a copy step
+  COMPANY_NAME "YuMuuu"
+  BUNDLE_ID "com.yumuuu.granular-synthesis"
+  PLUGIN_MANUFACTURER_CODE YuMu
+  PLUGIN_CODE GrSy
   APP_SANDBOX_ENABLED TRUE
   APP_SANDBOX_OPTIONS com.apple.security.network.client com.apple.security.files.user-selected.read-write
   NEEDS_WEB_BROWSER TRUE
@@ -57,6 +61,7 @@ target_sources(${TARGET_NAME}
   PRIVATE
   PluginProcessor.cpp
   SampleLoader.cpp
+  VoiceAllocator.cpp
   WebViewEditor.cpp)
 
 target_compile_features(${TARGET_NAME}

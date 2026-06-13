@@ -259,6 +259,13 @@ EffectsPluginProcessor::EffectsPluginProcessor()
         p->addListener(this);
         addParameter(p);
 
+        if (paramId == elem::js::String("rootNote"))
+            rootNoteParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("transpose"))
+            transposeParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+        else if (paramId == elem::js::String("release"))
+            releaseParameter = dynamic_cast<juce::AudioParameterFloat*>(p);
+
         const auto normalizedValue = p->getValue();
         paramReadouts.emplace_back(ParameterReadout { normalizedValue, false });
         state.insert_or_assign(
@@ -333,6 +340,8 @@ void EffectsPluginProcessor::changeProgramName (int /* index */, const juce::Str
 //==============================================================================
 void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    voiceAllocator.prepare(samplesPerBlock);
+
     // Some hosts call `prepareToPlay` on the real-time thread, some call it on the main thread.
     // To address the discrepancy, we check whether anything has changed since our last known
     // call. If it has, we flag for initialization of the Elementary engine and runtime, then
@@ -353,8 +362,8 @@ void EffectsPluginProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 
 void EffectsPluginProcessor::releaseResources()
 {
-    // When playback stops, you can use this as an opportunity to free up any
-    // spare memory, etc.
+    voiceAllocator.reset();
+    activeVoiceCount.store(0);
 }
 
 bool EffectsPluginProcessor::isBusesLayoutSupported (const AudioProcessor::BusesLayout& layouts) const
@@ -363,16 +372,34 @@ bool EffectsPluginProcessor::isBusesLayoutSupported (const AudioProcessor::Buses
         && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
-void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /* midiMessages */)
+void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     // Clear the output buffer to prevent any garbage if our runtime isn't ready
     buffer.clear();
 
     // Process the elementary runtime
-    if (runtime != nullptr) {
+    if (runtime != nullptr
+        && rootNoteParameter != nullptr
+        && transposeParameter != nullptr
+        && releaseParameter != nullptr
+        && buffer.getNumSamples() <= voiceAllocator.getMaximumBlockSize())
+    {
+        voiceAllocator.render(
+            midiMessages,
+            buffer.getNumSamples(),
+            rootNoteParameter->get(),
+            transposeParameter->get(),
+            releaseParameter->get(),
+            lastKnownSampleRate);
+
+        const auto newActiveVoiceCount = voiceAllocator.getActiveVoiceCount();
+
+        if (activeVoiceCount.exchange(newActiveVoiceCount) != newActiveVoiceCount)
+            triggerAsyncUpdate();
+
         runtime->process(
-            nullptr,
-            0,
+            voiceAllocator.getChannelPointers(),
+            VoiceAllocator::numControlChannels,
             const_cast<float**>(buffer.getArrayOfWritePointers()),
             buffer.getNumChannels(),
             buffer.getNumSamples(),
@@ -409,6 +436,12 @@ void EffectsPluginProcessor::handleAsyncUpdate()
     }
 
     applyPendingSampleResult();
+
+    state.insert_or_assign("meters", elem::js::Object {
+        { "activeVoices", elem::js::Number(activeVoiceCount.load()) },
+        { "activeGrains", elem::js::Number(0) },
+        { "cpuOverload", elem::js::Value(false) }
+    });
 
     // Next we iterate over the current parameter values to update our local state
     // object, which we in turn dispatch into the JavaScript engine
