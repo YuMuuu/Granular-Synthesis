@@ -2,6 +2,7 @@ import { useState, type SVGProps } from 'react';
 import { XCircleIcon, XMarkIcon } from '@heroicons/react/20/solid'
 
 import Knob from './Knob';
+import WaveformEditor from './WaveformEditor';
 
 import manifest from '../public/manifest.json';
 
@@ -163,21 +164,53 @@ export default function Interface(props: InterfaceProps) {
     : activePresetId;
   const selectedPreset = presetItems.find((preset) => preset.id === effectivePresetId);
   const effectivePresetName = presetName || selectedPreset?.name || '';
+  const rawRegionStart = typeof props.state.regionStart === 'number' ? props.state.regionStart : 0;
+  const regionEnd = typeof props.state.regionEnd === 'number' ? props.state.regionEnd : 1;
+  const regionStart = Math.min(rawRegionStart, regionEnd);
+  const rawPosition = typeof props.state.position === 'number' ? props.state.position : 0.5;
+  const position = Math.min(regionEnd, Math.max(regionStart, rawPosition));
+
+  function requestConstrainedParamValueUpdate(paramId: string, value: number) {
+    if (paramId === 'regionStart') {
+      const nextStart = Math.min(value, regionEnd);
+      props.requestParamValueUpdate(paramId, nextStart);
+
+      if (position < nextStart)
+        props.requestParamValueUpdate('position', nextStart);
+      return;
+    }
+
+    if (paramId === 'regionEnd') {
+      const nextEnd = Math.max(value, regionStart);
+      props.requestParamValueUpdate(paramId, nextEnd);
+
+      if (position > nextEnd)
+        props.requestParamValueUpdate('position', nextEnd);
+      return;
+    }
+
+    if (paramId === 'position') {
+      props.requestParamValueUpdate(paramId, Math.min(regionEnd, Math.max(regionStart, value)));
+      return;
+    }
+
+    props.requestParamValueUpdate(paramId, value);
+  }
 
   return (
-    <div className="w-full h-screen min-w-[492px] min-h-[238px] bg-slate-800 bg-mesh p-8">
-      <div className="h-1/5 flex justify-between items-center text-md text-slate-400 select-none">
-        <Logo className="h-8 w-auto text-slate-100" />
-        <div>
+    <div className="flex h-screen w-full min-w-[900px] min-h-[640px] flex-col overflow-hidden bg-slate-800 bg-mesh p-4">
+      <div className="flex h-9 shrink-0 items-center justify-between text-xs text-slate-400 select-none">
+        <Logo className="h-6 w-auto text-slate-100" />
+        <div className="truncate pl-4">
           <span className="font-bold">Granular Synthesis</span> &middot; {__BUILD_DATE__} &middot; {__COMMIT_HASH__}
         </div>
       </div>
-      <div className="flex flex-col h-4/5">
+      <div className="flex min-h-0 flex-1 flex-col gap-2">
         {props.error && (<ErrorAlert message={props.error.message} reset={props.resetErrorState} />)}
-        <div className="mb-3 flex items-center gap-2 rounded border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
+        <div className="flex h-10 shrink-0 items-center gap-2 rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200">
           <select
             aria-label="Preset"
-            className="min-w-44 rounded bg-slate-800 p-2"
+            className="min-w-36 rounded bg-slate-800 px-2 py-1.5"
             value={effectivePresetId}
             onChange={(event) => {
               const presetId = event.target.value;
@@ -193,22 +226,22 @@ export default function Interface(props: InterfaceProps) {
           </select>
           <input
             aria-label="Preset name"
-            className="min-w-0 flex-1 rounded bg-slate-800 p-2"
+            className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1.5"
             maxLength={80}
             placeholder="Preset name"
             value={effectivePresetName}
             onChange={(event) => setPresetName(event.target.value)}
           />
-          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!effectivePresetId} onClick={() => props.loadPreset(effectivePresetId)}>Load</button>
-          <button type="button" className="rounded bg-pink-500 px-3 py-2 font-semibold text-slate-950 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePreset(effectivePresetName)}>Save</button>
-          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePresetAs(effectivePresetName)}>Save As</button>
-          <button type="button" className="rounded bg-slate-700 px-3 py-2 disabled:opacity-40" disabled={!selectedPreset || !effectivePresetName.trim()} onClick={() => props.renamePreset(effectivePresetId, effectivePresetName)}>Rename</button>
-          <button type="button" className="rounded bg-red-950 px-3 py-2 text-red-200 disabled:opacity-40" disabled={!selectedPreset} onClick={() => props.deletePreset(effectivePresetId)}>Delete</button>
+          <button type="button" className="rounded bg-slate-700 px-2 py-1.5 disabled:opacity-40" disabled={!effectivePresetId} onClick={() => props.loadPreset(effectivePresetId)}>Load</button>
+          <button type="button" className="rounded bg-pink-500 px-2 py-1.5 font-semibold text-slate-950 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePreset(effectivePresetName)}>Save</button>
+          <button type="button" className="rounded bg-slate-700 px-2 py-1.5 disabled:opacity-40" disabled={!effectivePresetName.trim()} onClick={() => props.savePresetAs(effectivePresetName)}>Save As</button>
+          <button type="button" className="rounded bg-slate-700 px-2 py-1.5 disabled:opacity-40" disabled={!selectedPreset || !effectivePresetName.trim()} onClick={() => props.renamePreset(effectivePresetId, effectivePresetName)}>Rename</button>
+          <button type="button" className="rounded bg-red-950 px-2 py-1.5 text-red-200 disabled:opacity-40" disabled={!selectedPreset} onClick={() => props.deletePreset(effectivePresetId)}>Delete</button>
         </div>
-        <div className="mb-4 flex items-center gap-4 rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
+        <div className="flex h-12 shrink-0 items-center gap-3 rounded border border-slate-700 bg-slate-900 px-3 text-xs text-slate-200">
           <button
             type="button"
-            className="rounded bg-pink-500 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50"
+            className="rounded bg-pink-500 px-3 py-1.5 font-semibold text-slate-950 disabled:opacity-50"
             disabled={sample?.status === 'loading'}
             onClick={props.openSample}
           >
@@ -229,20 +262,34 @@ export default function Interface(props: InterfaceProps) {
               <div className="text-red-400">{sample.error}</div>
             )}
           </div>
-          <div className="text-right text-xs text-slate-400">
-            <div>
+          <div className="flex shrink-0 items-center gap-3 text-right text-[10px] text-slate-400">
+            <div className="whitespace-nowrap">
               {props.state.transport?.bpm.toFixed(1) ?? '120.0'} BPM
               {props.state.transport?.tempoAvailable === false ? ' fallback' : ''}
             </div>
-            <div>Voices {props.state.meters?.activeVoices ?? 0}/16</div>
-            <div>Grains {props.state.meters?.activeGrains ?? 0}/128</div>
+            <div className="whitespace-nowrap">Voices {props.state.meters?.activeVoices ?? 0}/16</div>
+            <div className="whitespace-nowrap">Grains {props.state.meters?.activeGrains ?? 0}/128</div>
             {props.state.meters?.cpuOverload && <div className="font-semibold text-red-400">CPU overload</div>}
           </div>
         </div>
-        <div className="flex flex-1">
-          <div className="grid w-full grid-cols-6 gap-4 overflow-y-auto">
+        <div className="shrink-0">
+          <WaveformEditor
+            peaks={sample?.waveformPeaks ?? []}
+            regionStart={regionStart}
+            regionEnd={regionEnd}
+            position={position}
+            onChange={requestConstrainedParamValueUpdate}
+          />
+        </div>
+        <div className="min-h-0 flex-1">
+          <div className="grid h-full w-full grid-cols-5 grid-rows-5 gap-2">
             {params.map((parameter) => {
-              const currentValue = props.state[parameter.paramId] ?? parameter.defaultValue;
+              const stateValue = props.state[parameter.paramId] ?? parameter.defaultValue;
+              const currentValue = parameter.paramId === 'regionStart'
+                ? regionStart
+                : parameter.paramId === 'position'
+                  ? position
+                  : stateValue;
 
               if (parameter.type === 'bool') {
                 const enabled = currentValue === true;
@@ -251,8 +298,8 @@ export default function Interface(props: InterfaceProps) {
                   <button
                     key={parameter.paramId}
                     type="button"
-                    className={`rounded border p-4 text-sm ${enabled ? 'border-pink-500 bg-pink-500 text-slate-950' : 'border-slate-600 bg-slate-900 text-slate-200'}`}
-                    onClick={() => props.requestParamValueUpdate(parameter.paramId, enabled ? 0 : 1)}
+                    className={`rounded border p-1 text-xs ${enabled ? 'border-pink-500 bg-pink-500 text-slate-950' : 'border-slate-600 bg-slate-900 text-slate-200'}`}
+                    onClick={() => requestConstrainedParamValueUpdate(parameter.paramId, enabled ? 0 : 1)}
                   >
                     {parameter.name}: {enabled ? 'On' : 'Off'}
                   </button>
@@ -264,12 +311,12 @@ export default function Interface(props: InterfaceProps) {
                 const denominator = Math.max(1, parameter.choices.length - 1);
 
                 return (
-                  <label key={parameter.paramId} className="flex flex-col gap-2 rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
+                  <label key={parameter.paramId} className="flex min-h-0 flex-col justify-center gap-1 rounded border border-slate-700 bg-slate-900 p-2 text-xs text-slate-200">
                     {parameter.name}
                     <select
-                      className="rounded bg-slate-800 p-2"
+                      className="rounded bg-slate-800 p-1"
                       value={index}
-                      onChange={(event) => props.requestParamValueUpdate(parameter.paramId, Number(event.target.value) / denominator)}
+                      onChange={(event) => requestConstrainedParamValueUpdate(parameter.paramId, Number(event.target.value) / denominator)}
                     >
                       {parameter.choices.map((choice, choiceIndex) => (
                         <option key={choice} value={choiceIndex}>{choice}</option>
@@ -283,15 +330,15 @@ export default function Interface(props: InterfaceProps) {
               const normalizedValue = (actualValue - parameter.min) / (parameter.max - parameter.min);
 
               return (
-                <div key={parameter.paramId} className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-900 p-3">
+                <div key={parameter.paramId} className="flex min-h-0 flex-col items-center justify-center rounded border border-slate-700 bg-slate-900 p-1">
                   <Knob
-                    className="m-2 h-16 w-16"
+                    className="h-8 w-8"
                     value={normalizedValue}
-                    onChange={(value) => props.requestParamValueUpdate(parameter.paramId, value)}
+                    onChange={(value) => requestConstrainedParamValueUpdate(parameter.paramId, value)}
                     {...colorProps}
                   />
-                  <div className="text-center text-sm font-light text-slate-50">{parameter.name}</div>
-                  <div className="text-center text-sm font-light text-pink-500">{actualValue.toFixed(2)}</div>
+                  <div className="truncate text-center text-[10px] leading-none font-light text-slate-50">{parameter.name}</div>
+                  <div className="text-center text-[9px] leading-none font-light text-pink-500">{actualValue.toFixed(2)}</div>
                 </div>
               );
             })}

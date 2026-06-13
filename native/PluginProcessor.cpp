@@ -537,7 +537,10 @@ void EffectsPluginProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         GrainScheduler::Parameters grainParameters;
         grainParameters.regionStart = regionStartParameter->get();
         grainParameters.regionEnd = regionEndParameter->get();
-        grainParameters.position = positionParameter->get();
+        grainParameters.position = juce::jlimit(
+            grainParameters.regionStart,
+            juce::jmax(grainParameters.regionStart, grainParameters.regionEnd),
+            positionParameter->get());
         grainParameters.scanRate = scanRateParameter->get();
         grainParameters.freeze = freezeParameter->get();
         grainParameters.grainSizeMs = grainSizeParameter->get();
@@ -696,6 +699,7 @@ void EffectsPluginProcessor::handleAsyncUpdate()
         rebuildRuntime();
 
     applyPendingSampleResult();
+    normalizeRegionParameters();
 
     state.insert_or_assign("meters", elem::js::Object {
         { "activeVoices", elem::js::Number(activeVoiceCount.load()) },
@@ -1088,7 +1092,35 @@ void EffectsPluginProcessor::applyPersistentState(const elem::js::Object& restor
             static_cast<uint32_t>(static_cast<elem::js::Number>(seedIt->second)));
 
     state.insert_or_assign("randomSeed", elem::js::Number(grainScheduler.getRandomSeed()));
+    normalizeRegionParameters();
     restoreSampleFromState(restoredState);
+}
+
+void EffectsPluginProcessor::normalizeRegionParameters()
+{
+    if (regionStartParameter == nullptr
+        || regionEndParameter == nullptr
+        || positionParameter == nullptr)
+        return;
+
+    auto regionStart = regionStartParameter->get();
+    auto regionEnd = regionEndParameter->get();
+
+    if (regionStart > regionEnd)
+    {
+        regionStart = regionEnd;
+        regionStartParameter->setValueNotifyingHost(
+            regionStartParameter->convertTo0to1(regionStart));
+    }
+
+    const auto position = positionParameter->get();
+    const auto constrainedPosition = juce::jlimit(regionStart, regionEnd, position);
+
+    if (position != constrainedPosition)
+    {
+        positionParameter->setValueNotifyingHost(
+            positionParameter->convertTo0to1(constrainedPosition));
+    }
 }
 
 void EffectsPluginProcessor::refreshPresetState()

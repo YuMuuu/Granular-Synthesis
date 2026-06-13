@@ -98,6 +98,7 @@ private:
     static void releaseRuntime(RuntimeSlot* slot);
     elem::js::Object capturePersistentState() const;
     void applyPersistentState(const elem::js::Object& restoredState);
+    void normalizeRegionParameters();
     void refreshPresetState();
 
     //==============================================================================

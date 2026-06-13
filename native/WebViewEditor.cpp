@@ -186,19 +186,47 @@ void WebViewEditor::handleSetParameterValueEvent(const juce::var& e)
         return;
 
     const auto paramId = obj->getProperty("paramId").toString();
-    const auto v = numberFromVar(obj->getProperty("value"));
+    auto value = juce::jlimit(0.0f, 1.0f, static_cast<float>(
+        numberFromVar(obj->getProperty("value"))));
+    juce::RangedAudioParameter* target = nullptr;
+    juce::RangedAudioParameter* regionStart = nullptr;
+    juce::RangedAudioParameter* regionEnd = nullptr;
+    juce::RangedAudioParameter* position = nullptr;
 
     for (auto& p : getAudioProcessor()->getParameters())
     {
         if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(p))
         {
             if (ranged->paramID == paramId)
-            {
-                ranged->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, static_cast<float>(v)));
-                break;
-            }
+                target = ranged;
+            else if (ranged->paramID == "regionStart")
+                regionStart = ranged;
+            else if (ranged->paramID == "regionEnd")
+                regionEnd = ranged;
+            else if (ranged->paramID == "position")
+                position = ranged;
         }
     }
+
+    if (target == nullptr)
+        return;
+
+    if (paramId == "regionStart" && regionEnd != nullptr)
+        value = juce::jmin(value, regionEnd->getValue());
+    else if (paramId == "regionEnd" && regionStart != nullptr)
+        value = juce::jmax(value, regionStart->getValue());
+    else if (paramId == "position" && regionStart != nullptr && regionEnd != nullptr)
+        value = juce::jlimit(regionStart->getValue(), regionEnd->getValue(), value);
+
+    target->setValueNotifyingHost(value);
+
+    if (position == nullptr)
+        return;
+
+    if (paramId == "regionStart" && position->getValue() < value)
+        position->setValueNotifyingHost(value);
+    else if (paramId == "regionEnd" && position->getValue() > value)
+        position->setValueNotifyingHost(value);
 }
 
 void WebViewEditor::openSampleChooser()

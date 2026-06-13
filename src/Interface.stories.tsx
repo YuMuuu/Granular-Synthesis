@@ -1,10 +1,20 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { useState, type ComponentProps } from 'react';
 
 import Interface from './Interface';
+
+const waveformPeaks = Array.from({ length: 512 }, (_, index) => {
+  const envelope = Math.sin(Math.PI * index / 511);
+  const carrier = 0.35 + 0.65 * Math.abs(Math.sin(index * 0.17));
+  return envelope * carrier;
+});
 
 const defaultState = {
   grainSize: 100,
   density: 20,
+  regionStart: 0.12,
+  regionEnd: 0.86,
+  position: 0.46,
   presets: {
     activePresetId: 'preset-1',
     items: [
@@ -22,10 +32,25 @@ const defaultState = {
     sampleRate: 48000,
     numFrames: 144000,
     durationSeconds: 3,
-    waveformPeaks: [],
+    waveformPeaks,
     error: '',
   },
 };
+
+function InteractiveInterface(args: ComponentProps<typeof Interface>) {
+  const [state, setState] = useState(args.state);
+
+  return (
+    <Interface
+      {...args}
+      state={state}
+      requestParamValueUpdate={(paramId, value) => {
+        args.requestParamValueUpdate(paramId, value);
+        setState((current) => ({ ...current, [paramId]: value }));
+      }}
+    />
+  );
+}
 
 const meta = {
   title: 'Plugin/Interface',
@@ -50,7 +75,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  render: (args) => <InteractiveInterface {...args} />,
+};
 
 export const DrySmallRoom: Story = {
   args: {
